@@ -1,0 +1,118 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Load libraries
+```{r}
+library(tidyverse)
+library(readr)
+library(gganimate)
+library(scales)
+library(data.table)
+```
+
+Load data files
+```{r}
+containing_folder = "C:/dev/NewEconABM/"
+#Change to bio output file
+bio_df = fread(paste0(containing_folder,"bio_output.csv"))
+#Change to econ output file
+econ_df = read.csv(paste0(containing_folder,"econ_output.csv"))
+```
+
+
+Adjust data format for easy graphing
+```{r}
+bio_df = 
+  bio_df %>%
+  mutate(i = as.factor(i),
+         j = as.factor(j),
+         alive = as.logical(alive),
+         symptomatic = as.logical(symptomatic))
+```
+
+Track mean severity over time
+```{r}
+bio_df %>%
+  group_by(t) %>%
+  summarize(hlb=mean(hlbSeverity)) %>%
+  ggplot(aes(x=t,y=hlb)) +
+  geom_line()
+
+```
+
+Track ACP population counts over time
+```{r}
+acp =
+  bio_df %>%
+  group_by(t) %>%
+  summarize(totalUI = sum(numPsyllids),
+            totalI = sum(numInfectedPsyllids)) %>%
+  pivot_longer(cols=!t, names_to="psyllid_type", values_to = "count") %>%
+  ggplot(aes(x=t, y=count, color=psyllid_type)) +
+  geom_line() +
+  scale_y_continuous(labels = comma)
+  
+acp
+```
+
+
+
+<WARNING: Computationally intensive>
+Generates a gift that shows how HLB spreads throughout the grid over time, as well as outlines that indicate if a tree is alive
+```{r}
+  bio_df %>%
+  ggplot(aes(x=j,y=i,fill=hlbSeverity)) +
+  geom_tile() +
+  scale_color_manual(values=c("yellow","black")) +
+  scale_fill_gradient(low="blue", high="red", limits=c(0, 1), labels=scales::percent) +
+  theme_bw() +
+  coord_equal() +
+  theme(axis.text.y = element_blank(), axis.text.x=element_blank()) +
+  scale_y_discrete(limits = rev(levels(bio_df$i))) +
+  scale_x_discrete(limits = levels(bio_df$j)) +
+  labs(title='Day: {frame_time}') +
+  transition_time(t) +
+  ease_aes()
+
+```
+
+
+Yearly returns, non-cumulative
+```{r}
+econ_df %>%
+  filter(t %% 365==0) %>%
+  mutate(yearly=returns - lag(returns)) %>%
+  ggplot(aes(x=t,y=yearly)) +
+  geom_line()
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,339 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+###################################################
+# Functions:
+
+# Function to standardize columns of a matrix
+# where you designate a standardization group
+# (e.g., the control group in an experiment)
+# with "sgroup", a logical vector.
+
+matStand <- function(x, sgroup = rep(TRUE, nrow(x))){
+				for(j in 1:ncol(x)){
+					x[,j] <- (x[,j] - mean(x[sgroup,j]))/sd(x[sgroup,j])
+				}
+				return(x)
+			}
+
+# Function that takes in data in matrix format and returns
+# (i) IC weights and (ii) ICW index.
+# Weights can be incorporated using the "wgts" argument.
+# The "revcols" argument takes a vector indicating which columns,
+# if any, should have values reversed (that is, standardized 
+# values are multiplied by -1) prior to construction of the index. 
+
+icwIndex <- function(	xmat,
+						wgts=rep(1, nrow(xmat)),
+						revcols = NULL,
+						sgroup = rep(TRUE, nrow(xmat))){
+					X <- matStand(xmat, sgroup)
+					if(length(revcols)>0){
+						X[,revcols] <-  -1*X[,revcols]
+					}
+					i.vec <- as.matrix(rep(1,ncol(xmat)))
+					Sx <- cov.wt(X, wt=wgts)[[1]]
+					weights <- solve(t(i.vec)%*%solve(Sx)%*%i.vec)%*%t(i.vec)%*%solve(Sx)
+					index <- t(solve(t(i.vec)%*%solve(Sx)%*%i.vec)%*%t(i.vec)%*%solve(Sx)%*%t(X))
+					return(list(weights = weights, index = index))
+					}
+```
+
+```{r}
+library(dbplyr)
+library(tidyverse)
+require(mgcv)
+library(ggforce)
+library(hash)
+```
+
+```{r}
+con = DBI::dbConnect(RPostgres::Postgres(),
+                     user="postgres",
+                     dbname="netbenefits",
+                     password="CitrusABM21",
+                     host="12.42.204.89")
+econ = tbl(con, "econ")
+```
+
+```{r}
+df = 
+  econ %>%
+  filter(t==1825) %>%
+  group_by(t, strategy_names,strategy_params) %>%
+  summarize(returns = mean(returns), hlb = mean(hlb_severity)) %>%
+  collect()
+
+og_df = df
+```
+index covariance method
+```{r}
+h = hash()
+h[["RogueTrees"]] = c("frequency", "radius", "discovery")
+h[["SprayTrees"]] = c("window", "efficacy")
+h[["DensePlanting"]] = c("densecost","ym")
+efficiency_df = data.frame(t=numeric(), efficiency=numeric(), strategy_names=character(),
+                          returns=numeric())
+for (strategy in unique(df$strategy_names)) {
+  for (numdays in unique(df$t)) {
+    subdf = df %>% filter(strategy_names==strategy, t == numdays)
+    strategies = str_split(strategy,"-")[[1]]
+    numStrategies = length(strategies)
+    subdf = 
+      subdf %>%
+      separate(strategy_params, sep="-", into=strategies)
+    strategyParamNames = c()
+    for (substrategy in strategies) {
+      subdf =
+        subdf %>%
+        separate(!!substrategy, sep=";", into=h[[substrategy]])
+      strategyParamNames = c(strategyParamNames, h[[substrategy]])
+    }
+    strategyParamNames = strategyParamNames[!grepl("cost",strategyParamNames)]
+    for (param in strategyParamNames) {
+      subdf[[param]] = as.numeric(subdf[[param]])
+    }
+    fm = as.formula(paste("returns", paste(strategyParamNames,collapse="+"), sep="~"))
+    weight.mdl = lm(fm, data=subdf)
+    summary(weight.mdl)
+    for (i in 1:length(strategyParamNames)) {
+      if (coef(weight.mdl)[[i+1]] < 0) {
+        subdf[[strategyParamNames[[i]]]] = -1*subdf[[strategyParamNames[[i]]]]
+      }
+    }
+    paramMtx = as.matrix(subdf %>% ungroup() %>% select(!c(t, returns, hlb, strategy_names)) %>% select(!contains("cost")))
+    subdf[["efficiency"]] = icwIndex(paramMtx)$index
+    efficiency_df = rbind(efficiency_df, subdf %>% ungroup() %>% select(t, efficiency, strategy_names, returns))
+  }
+}
+```
+
+First shot at a generalized method
+```{r}
+h = hash()
+h[["RogueTrees"]] = c("frequency", "radius", "discovery")
+h[["SprayTrees"]] = c("window", "efficacy")
+h[["DensePlanting"]] = c("densecost","ym")
+efficiency_df = data.frame(years=numeric(), efficiency=numeric(), strategy_names=character(),
+                          predictedReturns=numeric())
+for (strategy in unique(df$strategy_names)) {
+  for (numdays in unique(df$t)) {
+    subdf = df %>% filter(strategy_names==strategy, t == numdays)
+    strategies = str_split(strategy,"-")[[1]]
+    numStrategies = length(strategies)
+    subdf = 
+      subdf %>%
+      separate(strategy_params, sep="-", into=strategies)
+    strategyParamNames = c()
+    for (substrategy in strategies) {
+      subdf =
+        subdf %>%
+        separate(!!substrategy, sep=";", into=h[[substrategy]])
+      strategyParamNames = c(strategyParamNames, h[[substrategy]])
+    }
+    strategyParamNames = strategyParamNames[!grepl("cost",strategyParamNames)]
+    for (param in strategyParamNames) {
+      subdf[[param]] = as.numeric(subdf[[param]])
+      subdf[[paste0(param,"_dist")]] = (max(subdf[[param]]) - subdf[[param]]) / diff(range(subdf[[param]]))
+    }
+    indVars = lapply(strategyParamNames,paste0,"_dist")
+    fm = as.formula(paste("returns", paste(indVars,collapse="+"), sep="~"))
+    weight.mdl = lm(fm, data=subdf)
+    summary(weight.mdl)
+    for (i in 1:length(indVars)) {
+      print(paste("Checking",i))
+      if (coef(weight.mdl)[[i+1]] < 0) {
+        print(paste(i,"is negative"))
+        og_param = str_split(indVars[[i]],"_")[[1]][1]
+        print(paste("Flipping",og_param,"(",i,")"))
+        subdf[[indVars[[i]]]] = (subdf[[og_param]] - min(subdf[[og_param]])) / diff(range(subdf[[og_param]]))
+      }
+    }
+    
+    adjusted.mdl = lm(fm, data=subdf)
+    summary(adjusted.mdl)
+    subdf[["efficiency"]] = 0
+    for (i in 1:length(indVars)) {
+      subdf[["efficiency"]] = subdf[["efficiency"]] + (coef(adjusted.mdl)[[i+1]]*subdf[[indVars[[i]]]])
+    }
+    subdf[["efficiency"]] = subdf[["efficiency"]] / (sum(coef(adjusted.mdl)) - coef(adjusted.mdl)[[1]])
+    
+    gam.mdl = gam(returns ~ s(efficiency), data=subdf)
+    subdf[["predictedReturns"]] = predict(gam.mdl, newdata=subdf)
+    subdf = 
+      subdf %>% 
+      ungroup() %>%
+      mutate(years = t/365) %>%
+      select(predictedReturns, years, efficiency, strategy_names)
+    efficiency_df = rbind(efficiency_df, subdf)
+  }
+}
+
+```
+
+
+```{r}
+filtered_df = og_df %>% filter(strategy_names=="SprayTrees-DensePlanting")
+#filtered_df %>%
+#  filter(
+#    !(strategy_names == "DensePlanting" & as.numeric(str_split(strategy_params,";",simplify = TRUE)[,2]) > 1.75),
+#    !(strategy_names == "SprayTrees-DensePlanting" & as.numeric(str_split(str_split(strategy_params,"-",simplify=TRUE)[,2], ";", #simplify=TRUE)[,2]) > 1.75)
+#  )
+spraydenseplanting =
+  og_df %>% 
+  filter(strategy_names=="SprayTrees-DensePlanting") %>%
+  filter(as.numeric(str_split(str_split(strategy_params,"-",simplify=TRUE)[,2],";",simplify=TRUE)[,2]) < 1.75)
+
+denseplanting = 
+  og_df %>%
+  filter(strategy_names=="DensePlanting") %>%
+  filter(as.numeric(str_split(strategy_params,";",simplify=TRUE)[,2]) < 1.75)
+
+df =
+  og_df %>% filter(!(strategy_names %in% c("DensePlanting","SprayTrees-DensePlanting"))) %>%
+  rbind(spraydenseplanting,denseplanting)
+```
+
+
+```{r}
+hlb_df =
+  econ %>%
+    filter(t %in% c(3650, 9125, 18250), strategy_names == "NoAction") %>%
+    group_by(t) %>%
+    summarize(returns = mean(returns), hlb = mean(hlb_severity)) %>%
+    collect() %>%
+    mutate(years = t/365, hlbreturns = returns) %>%
+    select(years, hlbreturns)
+#hlb_df = data.frame(hlb = c(0,0,0), 
+#                    hlbreturns=c(900000,2200000, 4200000),
+#                    years=c(10,25,50)
+#                    )
+```
+
+```{r}
+efficiency_df =
+  efficiency_df %>%
+  group_by(strategy_names,years) %>%
+  mutate(strategyRank = row_number(predictedReturns) - 1,
+         strategyTotal = n()) %>%
+  ungroup() %>%
+  group_by(years) %>%
+  mutate(totalRank = row_number(predictedReturns) - 1,
+         adjustedRank = totalRank - strategyRank,
+         dominantP = adjustedRank / (n() - strategyTotal))
+```
+
+```{r}
+numAcres = 11.34
+dominancePlt =
+  efficiency_df %>%
+    ggplot(aes(x=efficiency, y=dominantP, color=strategy_names)) +
+    geom_line() + 
+    labs(x="Strategy Efficiency", 
+         y="Probability of Dominance", 
+         color="Strategy",
+         title="Probability of strategy being dominant")
+for (i in 1:n_pages(dominancePlt + facet_wrap_paginate(~years, nrow=1,ncol=1,page=1))) {
+  print(
+    dominancePlt +
+    facet_wrap_paginate(~years, ncol=1,nrow=1,page=i)
+  )
+}
+
+efficiency_df %>%
+  group_by(strategy_names,years) %>%
+  summarize(EV = mean(dominantP)) %>%
+  ggplot(aes(x=years,y=EV, color=strategy_names)) +
+  geom_point() +
+  geom_line() +
+  labs(x="Years of infection", 
+       y="Expected Value of Dominance Probability",
+       color="Strategy",
+       title="Expected Value of Dominance Probability over Time")
+
+efficiency_df %>%
+  left_join(hlb_df, by="years") %>%
+  mutate(netBenefits = predictedReturns - hlbreturns,
+         netBenefitsPerAnAcre = netBenefits / years / numAcres) %>%
+  ggplot(aes(x=efficiency, y=netBenefitsPerAnAcre, color=strategy_names)) +
+  geom_line() +
+  facet_wrap(~years)
+
+efficiency_df %>%
+  left_join(hlb_df, by="years") %>%
+  mutate(netBenefits = predictedReturns - hlbreturns,
+         netBenefitsPerAnAcre = netBenefits / years / numAcres) %>%
+  group_by(strategy_names,years) %>%
+  summarize(netBenefitsPerAnAcre = mean(netBenefitsPerAnAcre)) %>%
+  ggplot(aes(x=years, y=netBenefitsPerAnAcre, color=strategy_names)) +
+  geom_line() +
+  geom_point()
+```
+
+
+ALT VERSION - No efficiency
+
+```{r}
+df =
+  df %>%
+  mutate(years = t/365) %>%
+  group_by(strategy_names,years) %>%
+  mutate(strategyRank = row_number(returns) - 1,
+         strategyTotal = n()) %>%
+  ungroup() %>%
+  group_by(years) %>%
+  mutate(totalRank = row_number(returns) - 1,
+         adjustedRank = totalRank - strategyRank,
+         dominantP = adjustedRank / (n() - strategyTotal)) %>%
+  ungroup()
+
+# Additional pruning for may 2 meeting
+#df = 
+#  df %>%
+#  filter(!(strategy_names == "DensePlanting" & as.numeric(str_split(strategy_params,";")[[1]][[2]]) > 1.75)) 
+         #!(strategy_names == "SprayTrees-DensePlanting" & as.numeric(str_split(str_split(strategy_params,"-")[[1]][[2]],";")[[1]][[2]]) < 1.75))
+  
+  
+```
+
+```{r}
+numAcres = 11.34
+
+
+df %>%
+  group_by(strategy_names,years) %>%
+  summarize(EV = mean(dominantP)) %>%
+  ggplot(aes(x=years,y=EV, color=strategy_names)) +
+  geom_point() +
+  geom_line() +
+  labs(x="Years of infection", 
+       y="Expected Value of Dominance Probability",
+       color="Strategy",
+       title="Expected probability of strategy being best control option")
+
+df %>%
+  left_join(hlb_df, by="years") %>%
+  mutate(netBenefits = returns - hlbreturns,
+         netBenefitsPerAnAcre = netBenefits / years / numAcres) %>%
+  group_by(years, strategy_names) %>%
+  summarize(netBenefitsPerAnAcre = mean(netBenefitsPerAnAcre)) %>%
+  ggplot(aes(x=years, y=netBenefitsPerAnAcre, color=strategy_names)) +
+  geom_line() +
+  geom_point() +
+  labs(x="Years of infection",
+       y="Net revenue per acre over base HLB scenario",
+       title="Expected difference in revenue compared to no control scenario",
+       color="Strategy")
+
+```
+
+
+
+
+
+
+
+

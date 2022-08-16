@@ -1,0 +1,270 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse)
+library(data.table)
+```
+
+
+```{r}
+base = fread("C:/dev/EconABM/baseline.csv")
+rogue = fread("C:/dev/EconABM/onlyrogue.csv")
+spray = fread("C:/dev/EconABM/onlyspray.csv")
+both = fread("C:/dev/EconABM/sprayandrogue.csv")
+df = rbind(base, rogue, spray, both)
+```
+
+
+```{r}
+df$strategy_names = as.factor(df$strategy_names)
+```
+
+
+```{r}
+df %>%
+  group_by(t, strategy_names) %>%
+  summarize(hlb = mean(hlb_severity)) %>%
+  ggplot(aes(x=t,y=hlb,color=strategy_names)) +
+  geom_line() +
+  labs(title="HLB Progression by Strategy",
+       x="Days since start of simulation",
+       y="Mean HLB Severity",
+       color="Strategies used")
+
+```
+
+```{r}
+df %>%
+  group_by(t, strategy_names) %>%
+  summarize(returns = mean(returns)) %>%
+  filter(t %% 91==0) %>%
+  ggplot(aes(x=t,y=returns,shape=strategy_names)) +
+  geom_line() +
+  geom_point() +
+  labs(title="Cumulative Returns by Strategy",
+       x="Days since start of simulation",
+       y="Cumulative Returns",
+       color="Strategies Used")
+
+
+```
+
+
+```{r}
+df %>%
+  filter (t %% 91 == 0, strategy_names != "NoAction") %>%
+  group_by(t, strategy_names) %>%
+  summarize(returns=mean(returns)) %>%
+  left_join(
+    df %>%
+      filter(strategy_names=="NoAction") %>%
+      group_by(t) %>%
+      summarize(baseline_returns = mean(returns)),
+    by=c("t")
+  ) %>%
+  mutate(netBenefits = returns - baseline_returns) %>%
+  ggplot(aes(x=t,y=netBenefits, shape=strategy_names)) +
+  geom_line() +
+  geom_point() +
+  labs(title="Cumulative Net Benefits by Strategy", 
+       y="CNB",x="Days since start of simulation",
+       shape="Strategies Used")
+```
+
+Sample strategy data
+```{r}
+sampleEfficacy = seq(0.65,0.95,by=0.001)
+sampleWindow = seq(20,100,by=1)
+ewPairs = expand.grid(sampleEfficacy, sampleWindow)
+ewPairs = 
+  ewPairs %>%
+  mutate(returns = 100 + 40*Var1 - 0.01*Var2)
+
+```
+
+
+
+```{r}
+ewPairs %>%
+  ggplot(aes(x=Var1, y=Var2, color=returns)) +
+  geom_point() +
+  labs(x="Efficacy", y="Window", color="Returns", title="Returns by Window and Spray Efficacy")
+```
+
+```{r}
+maxDistance = abs(0.95-0.65) + abs(100-20)
+ewPairs = 
+  ewPairs %>%
+  mutate(strategyGamma = 1 - (( (0.95 - Var1) / 0.35 ) + ( (Var2 - 20) / 80 )) / 2,
+         strategyGammaRounded = round(strategyGamma,digits=3))
+  
+ewPairs %>%
+  group_by(strategyGammaRounded) %>%
+  summarize(returns = mean(returns)) %>%
+  ggplot(aes(x=strategyGammaRounded,y=returns)) +
+  geom_line() +
+  labs(x="Strategy Gamma", y="Mean Returns", title="Spraying returns by efficacy (SIMULATED)")
+
+
+```
+
+```{r}
+library(dbplyr)
+con = DBI::dbConnect(RPostgres::Postgres(),
+                     user="postgres",
+                     dbname="netbenefits",
+                     password="CitrusABM21",
+                     host="12.42.204.89")
+econ = tbl(con, "econ")
+```
+
+
+```{r}
+spraydf = 
+  econ %>%
+  filter(t==1825, strategy_names=="SprayTrees") %>%
+  group_by(strategy_params) %>%
+  summarize(hlb = mean(hlb_severity), returns = mean(returns)) %>%
+  collect()
+  
+```
+```{r}
+spraydf = 
+  spraydf %>%
+  separate(strategy_params, sep=";", into=c("sWindow", "sEfficacy", "sCost")) %>%
+  mutate(
+    efficacy=as.numeric(sEfficacy),
+    window=as.numeric(sWindow)
+  )
+```
+
+```{r}
+spraydf %>%
+  ggplot(aes(x=efficacy,y=hlb,color=as.factor(window))) +
+  geom_line() 
+```
+
+```{r}
+spraydf %>%
+  mutate(efficacyGap = 1 - ((0.95 - efficacy) / 0.35),
+         windowGap = 1 - ((window - 20) / 80)) %>%
+  lm(formula=returns ~ efficacyGap + windowGap) %>%
+  summary()
+```
+
+
+
+```{r}
+efficacyWeight=12
+maxDistance = efficacyWeight*abs(0.95-0.65) + abs(100-20)
+spraydf %>%
+  mutate(strategyGamma = 1 - (efficacyWeight* ( (0.95 - efficacy) / 0.35 ) + ( (window - 20) / 80 )) / (1+efficacyWeight),
+         strategyGammaRounded = round(strategyGamma,digits=3)) %>%
+  group_by(strategyGammaRounded) %>%
+  summarize(hlb=mean(hlb),returns = mean(returns)) %>%
+  ggplot(aes(x=strategyGammaRounded,y=returns)) +
+  geom_line() +
+  labs(x="Strategy Efficiency", y="Mean Returns", title="Spraying returns by efficiency")
+
+```
+
+
+```{r}
+spraydf %>%
+  mutate(strategyGamma = 1 - (efficacyWeight* ( (0.95 - efficacy) / 0.35 ) + ( (window - 20) / 80 )) / (1+efficacyWeight),
+         strategyGammaRounded = round(strategyGamma,digits=3)) %>%
+  lm(formula=returns ~ strategyGammaRounded) %>%
+  summary()
+  
+
+
+```
+
+
+```{r}
+df = econ %>%
+  filter(t==1825) %>%
+  group_by(strategy_names, strategy_params) %>%
+  summarize(hlb = mean(hlb_severity), returns = mean(returns)) %>%
+  collect()
+```
+
+```{r}
+n = nrow(df)
+roguedf = 
+  df %>%
+  filter(strategy_names=="RogueTrees") %>%
+  separate(strategy_params, ";", into=c("frequency","radius")) %>%
+  mutate(frequency = as.numeric(frequency),
+         radius = as.numeric(radius))
+roguedf %>%
+  ggplot(aes(x=frequency, y=returns, color=as.factor(radius))) +
+  geom_line()
+
+```
+```{r}
+roguedf %>%
+  lm(formula=returns ~ frequency + radius) %>%
+  summary()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

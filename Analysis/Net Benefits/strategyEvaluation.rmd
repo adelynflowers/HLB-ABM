@@ -1,0 +1,433 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(dbplyr)
+library(tidyverse)
+require(mgcv)
+```
+
+```{r}
+con = DBI::dbConnect(RPostgres::Postgres(),
+                     user="postgres",
+                     dbname="netbenefits",
+                     password="CitrusABM21",
+                     host="12.42.204.89")
+econ = tbl(con, "econ")
+```
+
+```{r}
+df = 
+  econ %>%
+  filter(t==1825) %>%
+  group_by(strategy_names,strategy_params) %>%
+  summarize(returns = mean(returns), hlb = mean(hlb_severity)) %>%
+  collect()
+```
+
+Construct each strategy df w/ efficiency
+
+
+DENSE PLANTING
+```{r}
+densedf = 
+  df %>%
+  filter(strategy_names=="DensePlanting") %>%
+  separate(strategy_params, sep=";", into=c("cost", "ym")) %>%
+  mutate(ym = as.numeric(ym))
+```
+
+```{r}
+densedf %>%
+  ggplot(aes(x=ym,y=returns)) +
+  geom_point()
+```
+
+```{r}
+ymD = diff(range(densedf$ym))
+
+dense_efficiency =
+  densedf %>%
+  mutate(efficiency = (ym - min(ym))/ymD) %>%
+  select(strategy_names,returns,efficiency,hlb)
+
+dense_efficiency %>%
+  ggplot(aes(x=efficiency,y=returns)) +
+  geom_line()
+
+dense_mdl = lm(returns ~ efficiency, data=dense_efficiency)
+summary(dense_mdl)
+dense_efficiency$predictedReturns = predict(dense_mdl, newdata=dense_efficiency)
+```
+
+DENSE AND SPRAY
+
+```{r}
+densespray_df = 
+  df %>%
+  filter(strategy_names == "SprayTrees-DensePlanting") %>%
+  separate(strategy_params, sep="-", into=c("sprayParams", "denseParams")) %>%
+  separate(sprayParams, sep=";", into=c("window", "efficacy", "sprayCost")) %>%
+  separate(denseParams, sep=";", into=c("denseCost", "ym")) %>%
+  mutate(
+    window = as.numeric(window),
+    efficacy = as.numeric(efficacy),
+    ym = as.numeric(ym)
+  )
+
+densespray_df %>%
+  ggplot(aes(x=ym, y=returns, color=as.factor(efficacy), shape=as.factor(window))) +
+  geom_point() +
+  geom_line()
+```
+```{r}
+densespray_df = 
+  densespray_df %>%
+    mutate(
+      windowDist = (max(window) - window) / diff(range(window)),
+      efficacyDist = (efficacy - min(efficacy)) / diff(range(efficacy)),
+      ymDist = (ym - min(ym)) / diff(range(ym))
+    )
+densespray.mdl = lm(returns ~ efficacyDist + windowDist + ymDist, data=densespray_df)
+summary(densespray.mdl)
+```
+```{r}
+eW = coef(densespray.mdl)[[2]]
+wW = coef(densespray.mdl)[[3]]
+ymW = coef(densespray.mdl)[[4]]
+totalW = eW + wW + ymW
+densespray_efficiency = 
+  densespray_df %>%
+  mutate(efficiency = 
+           (eW*efficacyDist + wW*windowDist + ymW*ymDist) / totalW
+         )
+  
+densespray_efficiency %>%
+  ggplot(aes(x=efficiency, y=returns)) +
+  geom_point() +
+  geom_smooth()
+
+densespray.gam.mdl = gam(returns ~ s(efficiency), data=densespray_efficiency)
+densespray_efficiency$predictedReturns = predict(densespray.gam.mdl, newdata=densespray_efficiency)
+densespray_efficiency$costs = 0
+densespray_efficiency = 
+  densespray_efficiency %>%
+  select(strategy_names, predictedReturns, costs, efficiency, hlb)
+```
+
+
+
+SPRAYING
+
+```{r}
+spraydf =
+  df %>%
+  filter(strategy_names=="SprayTrees") %>%
+  separate(strategy_params, sep=";", into=c("window","efficacy","cost")) %>%
+  mutate(window = as.numeric(window),
+         efficacy=as.numeric(efficacy))
+```
+
+Observe vs returns/hlb
+```{r}
+returnsVefficacy =
+  spraydf %>%
+  ggplot(aes(x=efficacy,y=returns,color=as.factor(window))) +
+  geom_line()
+
+returnsVwindow =
+  spraydf %>%
+  ggplot(aes(x=window,y=returns,color=as.factor(efficacy))) +
+  geom_line()
+  
+hlbVefficacy =
+  spraydf %>%
+  ggplot(aes(x=efficacy,y=hlb,color=as.factor(window))) +
+  geom_line()
+
+hlbVwindow =
+  spraydf %>%
+  ggplot(aes(x=window,y=hlb,color=as.factor(efficacy))) +
+  geom_line()
+
+returnsVefficacy
+returnsVwindow
+hlbVefficacy
+hlbVwindow
+```
+
+Find the weights
+```{r}
+spraydf =
+  spraydf %>%
+  mutate(
+    efficacyDist = (efficacy - min(efficacy)) / diff(range(efficacy)),
+    windowDist = (max(window) - window) / diff(range(window))
+  )
+spraymdl =
+  spraydf %>%
+    lm(formula=returns ~ efficacyDist + windowDist)
+summary(spraymdl)
+```
+
+Create efficiency frame, check plot
+```{r}
+efficacyW= coef(spraymdl)[[2]]
+windowW = coef(spraymdl)[[3]]
+totalW = efficacyW + windowW
+spraydf_efficiency =
+  spraydf %>%
+  mutate(efficiency = (efficacyW*efficacyDist + windowW*windowDist) / totalW) %>%
+  group_by(efficiency,strategy_names) %>%
+  summarize(hlb=mean(hlb),returns = mean(returns)) %>%
+  select(strategy_names, efficiency, returns, hlb)
+
+spraydf_efficiency %>%
+  ggplot(aes(x=efficiency,y=returns)) +
+  geom_line() +
+  geom_smooth(method="gam") +
+  labs(x="Strategy Efficiency", y="Mean Returns", title="Spraying returns by efficiency")
+
+spray.gam.mdl = gam(returns ~ s(efficiency), data=spraydf_efficiency)
+spraydf_efficiency$predictedReturns = predict(spray.gam.mdl, newdata=spraydf_efficiency)
+spraydf_efficiency$costs = 0
+spraydf_efficiency =
+  spraydf_efficiency %>%
+  select(costs,hlb,predictedReturns,strategy_names,efficiency)
+```
+
+ROGUEING
+
+
+```{r}
+roguedf =
+  df %>%
+  filter(strategy_names=="RogueTrees") %>%
+  separate(strategy_params, sep=";", into=c("frequency","radius","discoveryRate")) %>%
+  mutate(frequency = as.numeric(frequency),
+         radius=as.numeric(radius),
+         discoveryRate = as.numeric(discoveryRate))
+```
+
+Observe vs returns/hlb
+```{r}
+returnsVfrequency =
+  roguedf %>%
+  ggplot(aes(x=frequency,y=returns,color=as.factor(discoveryRate))) +
+  geom_line() +
+  facet_wrap(~radius)
+
+returnsVrate =
+  roguedf %>%
+  ggplot(aes(x=discoveryRate,y=returns,color=as.factor(frequency))) +
+  geom_line() +
+  facet_wrap(~radius)
+  
+hlbVfrequency =
+  roguedf %>%
+  ggplot(aes(x=frequency,y=hlb,color=as.factor(discoveryRate))) +
+  geom_line() +
+  facet_wrap(~radius)
+
+hlbVrate =
+  roguedf %>%
+  ggplot(aes(x=discoveryRate,y=hlb,color=as.factor(frequency))) +
+  geom_line() +
+  facet_wrap(~radius)
+
+returnsVfrequency
+returnsVrate
+hlbVfrequency
+hlbVrate
+```
+
+Find the weights
+```{r}
+roguedf =
+roguedf %>%
+  mutate(
+    freqDist = (max(frequency) - frequency) / diff(range(frequency)),
+    discoveryDist = (max(discoveryRate) - discoveryRate) / diff(range(discoveryRate)),
+    radiusDist = (radius - min(radius) ) / diff(range(radius)),
+
+  ) 
+
+lm.rogue = lm(formula=returns ~ freqDist  + discoveryDist + radiusDist, data=roguedf)
+gam.rogue = gam(returns ~ s(freqDist) + s(discoveryDist) + s(radiusDist, k=5), data=roguedf)
+summary(lm.rogue)
+summary(gam.rogue)
+roguemdl = lm.rogue
+```
+
+Create efficiency frame, check plot
+```{r}
+freqW = coef(roguemdl)[[2]]
+discoveryW = 0
+radiusW = coef(roguemdl)[[4]]
+maxFreq = max(roguedf$frequency)
+maxDiscovery = max(roguedf$discoveryRate)
+maxRadius = max(roguedf$radius)
+weightDenom = freqW + discoveryW + radiusW
+freqD = diff(range(roguedf$frequency))
+discoveryD = diff(range(roguedf$discoveryRate))
+radiusD = diff(range(roguedf$radius))
+maxDistance = freqW + discoveryW + radiusW
+roguedf_efficiency =
+  roguedf %>%
+  mutate(efficiency = 
+           (
+             (freqW *   (max(frequency) -frequency) / freqD) +
+             (discoveryW * (maxDiscovery - discoveryRate) / discoveryD) +
+             (radiusW * (radius - min(radius)) / radiusD) 
+             
+           ) / maxDistance) %>%
+  group_by(efficiency,strategy_names) %>%
+  summarize(hlb=mean(hlb),returns = mean(returns)) %>%
+  select(strategy_names, efficiency, returns, hlb)
+
+roguedf_efficiency %>%
+  ggplot(aes(x=efficiency,y=returns)) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  labs(x="Strategy Efficiency", y="Mean Returns", title="Rogueing returns by efficiency")
+
+rogue.gam.mdl = gam(returns ~ s(efficiency), data=roguedf_efficiency)
+roguedf_efficiency$predictedReturns = predict(rogue.gam.mdl, newdata=roguedf_efficiency)
+roguedf_efficiency$costs = 0
+roguedf_efficiency = 
+  roguedf_efficiency %>%
+  select(predictedReturns, costs, hlb, strategy_names, efficiency)
+```
+ROGUE AND SPRAY
+```{r}
+roguespray_df = 
+  df %>%
+  filter(strategy_names == "RogueTrees-SprayTrees") %>%
+  separate(strategy_params, sep="-", into=c("rogueParams", "sprayParams")) %>%
+  separate(rogueParams, sep=";", into=c("frequency", "radius", "discoveryRate")) %>%
+  separate(sprayParams, sep=";", into=c("window", "efficacy")) %>%
+  mutate(
+    frequency=as.numeric(frequency),
+    radius=as.numeric(radius),
+    discoveryRate = as.numeric(discoveryRate),
+    window = as.numeric(window),
+    efficacy = as.numeric(efficacy)
+  )
+
+roguespray_df %>%
+  ggplot(aes(x=frequency, y=returns, shape=as.factor(discoveryRate), color=as.factor(radius))) +
+  geom_point() +
+  geom_line() +
+  facet_grid(cols=vars(as.factor(efficacy)), rows=vars(as.factor(window)))
+```
+
+```{r}
+roguespray_df =
+  roguespray_df %>%
+  mutate(
+    radiusDist = (max(radius) - radius) / diff(range(radius)),
+    discoveryDist = (discoveryRate - min(discoveryRate)) / diff(range(discoveryRate)),
+    frequencyDist = (max(frequency) - frequency) / diff(range(frequency)),
+    efficacyDist = (efficacy - min(efficacy)) / diff(range(efficacy)),
+    windowDist = (max(window) - window) / diff(range(window))
+  )
+
+roguespray.mdl = lm(returns ~ radiusDist + discoveryDist + frequencyDist + efficacyDist + windowDist, data=roguespray_df)
+summary(roguespray.mdl)
+
+rW = coef(roguespray.mdl)[[2]]
+dW = coef(roguespray.mdl)[[3]]
+fW = coef(roguespray.mdl)[[4]]
+eW = coef(roguespray.mdl)[[5]]
+wW = coef(roguespray.mdl)[[6]]
+totalW = rW + dW +fW +eW +wW
+roguespray_efficiency = 
+  roguespray_df %>%
+  mutate(efficiency = 
+           (rW*radiusDist + dW*discoveryDist + fW*frequencyDist + eW*efficacyDist + wW*windowDist) / totalW
+        ) 
+
+roguespray_efficiency %>%
+  ggplot(aes(x=efficiency, y=returns)) +
+  geom_point() +
+  geom_smooth()
+
+roguespray.gam.mdl = gam(returns ~ s(efficiency), data=roguespray_efficiency)
+roguespray_efficiency$predictedReturns = predict(roguespray.gam.mdl, newdata=roguespray_efficiency)
+roguespray_efficiency$costs = 0
+roguespray_efficiency = 
+  roguespray_efficiency %>%
+  select(costs, predictedReturns, hlb, efficiency, strategy_names)
+
+```
+
+TESTER
+
+```{r}
+df <- data.frame(indvar = 1:20) %>%
+  mutate(A = indvar*2 + 10,
+         B = indvar*1 + 20)
+
+df =
+  df %>%
+  pivot_longer(!indvar, names_to="group", values_to="depvar")
+df %>%
+  ggplot(aes(x=indvar, y=depvar, color=group)) +
+  geom_point() +
+  geom_line()
+
+```
+```{r}
+df =
+  df %>% 
+  group_by(group) %>%
+  mutate(groupRank = row_number(depvar) - 1,
+         groupTotal = n()) %>%
+  ungroup() %>%
+  mutate(totalRank = row_number(depvar) - 1,
+         adjustedRank = totalRank - groupRank,
+         dominantP = adjustedRank / (n() - groupTotal))
+
+df %>%
+  ggplot(aes(x=indvar, y=dominantP, color=group)) +
+  geom_point() +
+  geom_line()
+```
+
+
+COMBINE
+```{r}
+efficiency_df = rbind(spraydf_efficiency, roguedf_efficiency, dense_efficiency, densespray_efficiency, roguespray_efficiency)
+efficiency_df =
+  efficiency_df %>%
+  group_by(strategy_names) %>%
+  mutate(strategyRank = row_number(predictedReturns) - 1,
+         strategyTotal = n()) %>%
+  ungroup() %>%
+  mutate(totalRank = row_number(predictedReturns) - 1,
+         adjustedRank = totalRank - strategyRank,
+         dominantP = adjustedRank / (n() - strategyTotal))
+
+efficiency_df %>%
+  ggplot(aes(x=efficiency, y=dominantP, color=strategy_names)) +
+  geom_line() + 
+  labs(x="Strategy Efficiency", 
+       y="Probability of Dominance", 
+       color="Strategy",
+       title="Probability of strategy being dominant")
+
+efficiency_df %>%
+  ggplot(aes(x=efficiency, y=predictedReturns, color=strategy_names)) +
+  geom_line() +
+  labs(x="Strategy Efficiency",
+       y="Predicted Returns",
+       color="Strategy",
+       title="Predicted Returns by Strategy and Efficiency")
+```
+
+
+
+
+

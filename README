@@ -1,0 +1,23 @@
+#LIBRARIES
+To use this model, please download boost and cereal and place them in the headers folder as "boost" and "cereal"
+
+Boost: https://www.boost.org/users/download/
+Cereal: https://uscilab.github.io/cereal/index.html
+
+The file structure should look like the following:
+
+headers
+  -> boost
+    -> accumulators
+    -> algorithms
+    -> etc...
+  -> cereal
+    -> archives
+    -> details
+    -> etc...
+    
+Once these folders are in place, the model can be run with "make", producing an executable called "serial.out". To run the model use the following:
+
+<executable-name> <path/to/econConfig> <path/to/bioConfig>
+
+If no config parameters are provided, the defaults located at configs/econConfig.json and configs/bioConfigs.json will be used.

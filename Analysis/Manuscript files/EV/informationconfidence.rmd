@@ -1,0 +1,155 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(dbplyr)
+library(betareg)
+library(viridis)
+library(stargazer)
+```
+Available in db but using local file for convenience
+```{r}
+df = read.csv("../../Data/maxEcon.csv")
+```
+
+Labeller helper func
+```{r}
+niceLabeller = function(variable, value) {
+  fixedvar = str_to_title(gsub("_", " ", variable))
+  full = paste(fixedvar, ": ", value, sep="")
+}
+
+```
+
+```{r}
+df %>%
+  group_by(alpha_perception, lambda) %>%
+  summarize(
+    lambda = mean(lambda),
+    alpha_perception = mean(alpha_perception),
+    hlb = mean(hlb_severity)
+  ) %>%
+  ggplot(aes(x=lambda,y=alpha_perception,fill=hlb)) +
+  geom_tile() +
+  scale_fill_viridis(option="turbo", limits=c(0,1)) +
+  labs(x="Lambda", y="Alpha Perception", fill="Severity") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+            panel.background = element_blank(), axis.line = element_blank())
+ggsave("informationconfidence-output/meanseverity.png", dpi=300, width=7, height=5)
+```
+Factorize, convert hlb using the squish
+```{r}
+df =
+  df %>%
+  mutate(
+    daysFound = if_else(infected==TRUE, 1825 - foundHLB_day, 0),
+    grove_id = as.factor(grove_id),
+    hlb_severity = (hlb_severity*(nrow(df)-1) + 0.5)/nrow(df)
+  )
+
+```
+
+Load models for summary and graphs
+
+```{r}
+load("C:/dev/maxEVFix.Rdata")
+prediction = read.csv("C:/dev/infoevpredict.csv")
+```
+
+```{r}
+stargazer(mdl2)
+```
+
+
+PMA level
+```{r}
+pma = 
+  df %>%
+  mutate(
+    invasion_modality = as.numeric(invasion_modality),
+    invasion_grove_id = as.numeric(invasion_grove_id)
+  ) %>%
+  group_by(experiment_id) %>%
+  summarize(
+    hlb = mean(hlb_severity),
+    lambda = mean(lambda),
+    alpha_perception = mean(alpha_perception),
+    premium = mean(premium),
+    invasion_modality = mean(invasion_modality),
+    invasion_grove_id = mean(invasion_grove_id)
+  ) %>%
+  mutate(
+    invasion_modality = as.factor(invasion_modality),
+    invasion_grove_id = as.factor(invasion_grove_id)
+  )
+
+```
+
+
+```{r}
+mdl.pma = betareg(hlb ~ lambda + alpha_perception + premium + invasion_modality*invasion_grove_id, data=pma)
+```
+
+```{r}
+stargazer(mdl.pma, 
+          omit=c("invasion", "grove"), 
+          type="text",
+          out="informationconfidence-output/regtable-pma.tex",
+          title="PMA level HLB severity regression output",
+          label="Tab:InformationConfidence-ExpectedValue-regtable-pma")
+```
+
+```{r}
+stargazer(mdl2, mdl.pma, 
+          omit=c("invasion", "grove"), 
+          column.labels=c("Grower level", "PMA level"),
+          type="text",
+          out="informationconfidence-output/regtable-combined.tex",
+          title="HLB severity regression output",
+          label="Tab:InformationConfidence-ExpectedValue-regtable-combined")
+
+```
+
+
+
+```{r}
+pmaPrediction = data.frame(
+  lambda = rep(seq(0,1,0.01), each=1, times=21816),
+  alpha_perception = rep(seq(0,1,0.01), each=101, times=216),
+  premium = rep(seq(0,53,15), each=10201, times=54),
+  invasion_grove_id = rep(c(0,1,2,10,11,12,20,21,22), each=40804, times=6),
+  invasion_modality = rep(1:6, each=367236, times=1)
+)
+pmaPrediction$invasion_grove_id = as.factor(pmaPrediction$invasion_grove_id)
+pmaPrediction$invasion_modality = as.factor(pmaPrediction$invasion_modality)
+pmaPrediction$hlb = predict(mdl.pma, newdata=pmaPrediction)
+```
+
+```{r}
+pmaPrediction %>%
+  group_by(alpha_perception, lambda) %>%
+  summarize(hlb = mean(hlb)) %>%
+  ggplot(aes(x=lambda,y=alpha_perception,fill=hlb)) +
+  geom_tile() +
+  scale_fill_viridis(option="turbo", limits=c(0,1)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+            panel.background = element_blank(), axis.line = element_blank()) +
+  labs(x="Average Lambda", y="Average Alpha Perception", fill="Severity", title="Predicted PMA-level severity by Alpha Perception, Lambda")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

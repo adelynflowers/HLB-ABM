@@ -1,0 +1,143 @@
+CURRENT STATE OF AFFAIRS
+----------------------------------------
+What gets stored in a bio file:
+    time
+    i
+    j
+    numPsyllids
+    numInfectedPsyllids
+    hlbSeverity
+
+What gets stored in an econ file:
+    t
+    i
+    j
+    behavior 
+    costs
+    returns
+    profit 
+    lambda 
+    gRisk 
+    eRisk
+    aRisk
+    lastRP
+    lastCP
+    lastNAEV
+    lastISEV
+    lastGSEV
+    maxE_i
+    maxE_j
+
+-------------------------------------------
+
+UPDATES NEEDED
+-------------------------------------------
+What should get stored in a bio file:
+    t 
+    i 
+    j
+    numPsyllids 
+    numInfectedPsyllids
+    hlbSeverity
+
+What should get stored in an econ file:
+    t 
+    i 
+    j 
+    behavior
+    costs 
+    returns 
+    profit 
+    lambda 
+    spray_efficacy
+    last_NA_ev
+    last_IS_ev
+    last_GS_ev
+    riskPerception
+    alphaPerception 
+-----------------------------------------------
+
+PROPOSED SQL LAYOUT
+-----------------------------------------------
+Econ, Bio, Experiments, spraying behaviors
+
+Bio
+=========================
+t - USMALLINT 
+i - UTINYINT
+j - UTINYINT
+numPsyllids - UMEDIUMINT
+numInfectedPsyllids - UMEDIUMINT
+hlbSeverity - DOUBLE (5 sig figs)
+experimentID - Foreign Key
+==========================
+
+Econ
+==========================
+t - USMALLINT
+i - UTINYINT
+j - UTINYINT
+sprayingBehavior - Foreign Key
+costs - MONEY
+returns - MONEY
+profit - MONEY
+lambda - DOUBLE(2 after decimal, 1 before)
+last_NA_ev - MONEY
+last_IS_ev - MONEY 
+last_GS_ev - MONEY
+riskPerception - Double(2 after decimal, 1 before)
+alphaPerception - Double(2 after decimal, 1 before)
+experimentID - Foreign Key 
+============================
+
+Spray behaviors 
+============================
+ID - Primary key 
+Description - CHAR(1)  ("I","G", "N")
+============================
+
+
+Experiments 
+===========================
+ID - Primary key 
+spray_efficacy - Double(2 after, 1 before)
+spray_window_individual - UTINYINT
+spray_window_group - UTINYINT 
+invasion_modality - UTINYINT 
+invasion_groveID - UTINYINT 
+fresh_yield - Double(2a,1b)
+juice_yield - Double(2a,1b)
+fruit_price - MONEY 
+juice_price - MONEY 
+planningLength - UMEDIUMINT 
+fixed_costs - MONEY 
+projectionLength - UMEDIUMINT 
+spray_cost - MONEY 
+simulation_set - Foreign Key 
+============================
+
+Simulation Sets 
+============================
+ID - Primary key 
+Description - VARCHAR(255)
+cluster_id - Foreign Key
+============================
+
+Simulation clusters 
+============================
+ID - Primary Key 
+Description - VARCHAR(255)
+============================
+
+
+Example:
+Cluster: "Bio Calibrate 75"
+    Set: "No Action No Cooperation"
+        Experiment: Modality 1, location 12 
+        
+
+
+
+
+
+

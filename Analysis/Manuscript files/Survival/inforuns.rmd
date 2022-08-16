@@ -1,0 +1,146 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+INFO RUNS SURVIVAL
+
+Using data from the info runs to evaluate the effect of information confidence on survival.
+
+Load libraries
+
+```{r}
+library(survival)
+library(stargazer)
+library(tidyverse)
+library(dplyr)
+library(dbplyr)
+library(ggfortify)
+library(ranger)
+library(survminer)
+library(viridis)
+```
+
+
+Connect to db
+```{r}
+con = DBI::dbConnect(RPostgres::Postgres(), 
+                     host="12.42.204.89",
+                     user="postgres",
+                     dbname="citrus",
+                     password="CitrusABM21")
+```
+
+Load DB tables
+```{r}
+econ = tbl(con, "econ")
+survival = tbl(con, "survival")
+experiments = tbl(con, "experiments")
+```
+
+Manipulate and pull down data
+```{r}
+desired.part =
+  econ %>%
+  filter(t==1825) %>%
+  group_by(experiment_id) %>%
+  mutate(sumLambda = sum(lambda), 
+         sumAP = sum(alpha_perception),
+         sumPremium = sum(premium)) %>%
+  ungroup() %>%
+  mutate(meanNeighborLambda = (sumLambda - lambda) / 8,
+         meanNeighborAP = (sumAP - alpha_perception) / 8,
+         meanNeighborPremium = (sumPremium - premium) / 8) %>%
+  select(alpha_perception, lambda, premium, meanNeighborLambda, meanNeighborAP, 
+         meanNeighborPremium, experiment_id, grove_id) %>%
+  left_join(experiments %>%
+              select(experiment_id, invasion_grove_id, invasion_modality),
+            by=c("experiment_id")) 
+df = survival %>%
+        left_join(desired.part, by=c("groveid"="grove_id", "experiment_id")) %>%
+        collect()
+```
+Factorize and add distance
+```{r}
+df = df %>%
+        mutate(grower_i = sep()
+               groveid = as.factor(groveid),
+               experiment_id = as.factor(experiment_id),
+               invasion_grove_id = as.factor(invasion_grove_id),
+               invasion_modality = as.factor(invasion_modality))
+```
+
+
+
+Specify 3 models:
+  1) grove id controls
+  2) 1 + experiment id controls
+  3) interact grove and invasion controls
+```{r}
+surv.groveid = survreg(Surv(t,e) ~ lambda + alpha_perception + premium + 
+                         meanNeighborLambda + meanNeighborAP + meanNeighborPremium + groveid, data=df)
+surv.inv = survreg(Surv(t,e) ~ lambda + alpha_perception + premium + 
+                     meanNeighborLambda + meanNeighborAP + meanNeighborPremium + 
+                     groveid*invasion_grove_id*invasion_modality, data=df)
+```
+
+Look at results
+```{r}
+stargazer(surv.groveid, surv.inv,
+          type="text",
+          omit=c("groveid*", "invasion*", "experiment*"),
+          align=TRUE,
+          title="Comparison of control specifications for the information confidence survival model",
+          label="Tab:InformationConfidence-Survival-speccomparison",
+          out="inforuns-output/speccomparison.tex",
+          column.labels = c("Grove", "Invasion"),
+          add.lines=list(
+            c("AIC", round(AIC(surv.groveid),3), round(AIC(surv.inv),3)),
+            c("BIC", round(BIC(surv.groveid),3), round(BIC(surv.inv),3))
+          ))
+```
+
+The invasion model performed best, lets run it over the different dists
+```{r}
+fm = Surv(t,e) ~ lambda + alpha_perception + premium + meanNeighborLambda + meanNeighborAP +
+  meanNeighborPremium + invasion_grove_id*groveid*invasion_modality
+surv.w = survreg(fm, dist="weibull", data=df)
+surv.e = survreg(fm, dist="exponential", data=df)
+surv.g = survreg(fm, dist="gaussian", data=df)
+surv.l = survreg(fm, dist="logistic", data=df)
+surv.ln = survreg(fm, dist="lognormal", data=df)
+surv.ll = survreg(fm, dist="loglogistic", data=df)
+```
+
+Compare results
+```{r}
+stargazer(surv.w,surv.e,surv.g,surv.l,surv.ln,surv.ll,
+          column.labels=c("Weibull","Exponential","Gaussian","Logistic","Log-normal","Log-logistic"),
+          model.names = FALSE,
+          type="text",
+          omit=c("groveid*", "invasion*", "experiment*"),
+          title="Comparisons of distributions for the invasion controls specifications",
+          label="Tab:InformationConfidence-Survival-distcomparison",
+          align=TRUE,
+          out="inforuns-output/distcomparison.tex",
+          font.size="small",
+          float.env="sidewaystable",
+          add.lines=list(
+            c("AIC", round(AIC(surv.w),3), round(AIC(surv.e),3), round(AIC(surv.g),3), round(AIC(surv.l),3), round(AIC(surv.ln),3), round(AIC(surv.ll),3)),
+            c("BIC", round(BIC(surv.w),3), round(BIC(surv.e),3), round(BIC(surv.g),3), round(BIC(surv.l),3), round(BIC(surv.ln),3), round(BIC(surv.ll),3))
+          ))
+
+```
+
+Since lognormal performs best by both criterion, let's see what it has to say about coefficients
+```{r}
+exp(coef(surv.ll))[1:6]
+```
+
+
+
+
+
+
+
+

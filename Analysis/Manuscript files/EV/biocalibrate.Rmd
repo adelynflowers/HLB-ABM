@@ -1,0 +1,342 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+BIO CALIBRATE EV ANALYSIS
+
+This file contains the analysis required for testing the effects of strategy and alpha on in grove spread.
+
+
+
+
+Load required libraries
+```{r}
+library(tidyverse)
+library(dbplyr)
+library(betareg)
+library(stargazer)
+library(viridis)
+```
+
+Data available in the database in the table "biocalibrate_ev_import", but I use a local file for speed purposes
+```{r}
+df = read.csv("C:/dev/biocalibrate-ev-legacy.csv")
+```
+
+```{r}
+gg65 = 
+  df %>%
+    mutate(efficacy=as.factor(efficacy), 
+           strategy=factor(strategy, levels=c("No Action", "Individual Action", "Group Action")),
+           alpha=as.factor(alpha)) %>%
+    filter(efficacy==0.65) %>%
+    group_by(strategy,alpha,relT) %>%
+    summarize(hlb = mean(hlbSeverity)) %>%
+  ggplot(aes(x=relT,y=hlb,color=strategy,linetype=alpha)) +
+  geom_line() +
+  scale_y_continuous(breaks=seq(0,1,0.1)) +
+  labs(x="Days Since Initial Infection",
+       y="Mean Severity",
+       color="Strategy",
+       linetype="Alpha") +
+  scale_color_viridis(discrete=TRUE, option="turbo")
+gg65
+ggsave("biocalibrate-output/meanSpread_65.png", dpi=300, width=7, height=5)
+gg75 = 
+  df %>%
+    mutate(efficacy=as.factor(efficacy), 
+           strategy=factor(strategy, levels=c("No Action", "Individual Action", "Group Action")),
+           alpha=as.factor(alpha)) %>%
+    filter(efficacy==0.75) %>%
+    group_by(strategy,alpha,relT) %>%
+    summarize(hlb = mean(hlbSeverity)) %>%
+  ggplot(aes(x=relT,y=hlb,color=strategy,linetype=alpha)) +
+  geom_line() +
+  scale_y_continuous(breaks=seq(0,1,0.1)) +
+  labs(x="Days Since Initial Infection",
+       y="Mean Severity",
+       color="Strategy",
+       linetype="Alpha") +
+  scale_color_viridis(discrete=TRUE, option="turbo")
+gg75
+ggsave("biocalibrate-output/meanSpread_75.png", dpi=300, width=7, height=5)
+gg85 = 
+  df %>%
+    mutate(efficacy=as.factor(efficacy), 
+           strategy=factor(strategy, levels=c("No Action", "Individual Action", "Group Action")),
+           alpha=as.factor(alpha)) %>%
+    filter(efficacy==0.85) %>%
+    group_by(strategy,alpha,relT) %>%
+    summarize(hlb = mean(hlbSeverity)) %>%
+  ggplot(aes(x=relT,y=hlb,color=strategy,linetype=alpha)) +
+  geom_line() +
+  scale_y_continuous(breaks=seq(0,1,0.1)) +
+  labs(x="Days Since Initial Infection",
+       y="Mean Severity",
+       color="Strategy",
+       linetype="Alpha") +
+  scale_color_viridis(discrete=TRUE, option="turbo")
+gg85
+ggsave("biocalibrate-output/meanSpread_85.png", dpi=300, width=7, height=5)
+```
+
+
+Change format for max value estimation
+```{r}
+df = df %>%
+      mutate(zeroes=relT == 0,
+             pid = cumsum(zeroes)) %>%
+      group_by(pid) %>%
+      summarize(maxHLB = max(hlbSeverity), maxT = max(relT), efficacy=max(efficacy), 
+                strategy=max(strategy), alpha=max(alpha))
+```
+
+Factor conversion
+```{r}
+df$efficacy = as.factor(df$efficacy)
+df$alpha = as.factor(df$alpha)
+df$strategy = factor(df$strategy, levels=c("No Action", "Individual Action", "Group Action"))
+```
+
+Since response variable is bound on [0,1], we use a beta regression for estimation. We test the 3 different estimators available: maximum likelihood, bias correction, bias reduction. Throw in an OLS for shiggles
+
+```{r}
+fm = maxHLB ~ efficacy*alpha + efficacy*strategy*maxT
+ols = lm(fm, data=df)
+br.ml = betareg(fm, data=df, type="ML")
+br.bc = betareg(fm, data=df, type="BC")
+br.br = betareg(fm, data=df, type="BR")
+```
+
+Comparing 3 models
+```{r}
+stargazer(ols, br.ml,br.bc,br.br, 
+          type="text",
+          title="Regression output for variable coordination model",
+          label="Tab:ExpectedValue-BioCalibrate-regressionoutput",
+          font.size = "tiny",
+          column.labels = c("OLS", "ML", "BC", "BR"),
+          add.lines=list(
+            c("AIC", round(AIC(ols),digits=5), round(AIC(br.ml),digits=5), round(AIC(br.bc),digits=5), round(AIC(br.br),digits=5)),
+            c("BIC", round(BIC(ols),digits=5), round(BIC(br.ml),digits=5), round(BIC(br.bc),digits=5), round(BIC(br.br),digits=5))
+            ),
+          object.names=FALSE,
+          model.names=FALSE,
+          model.numbers=FALSE)
+```
+
+Inference is done with graphs
+
+```{r}
+predictionData = data.frame(maxT=rep(1:3650,18), 
+                            strategy=rep(c("No Action", "Individual Action", "Group Action"),1, each=3650*6), 
+                            efficacy=rep(c(0.65,0.75,0.85),3, each=3650*2), 
+                            alpha=rep(0:1,9, each=3650))
+predictionData =
+  predictionData %>% 
+  mutate(strategy=factor(strategy, levels=c("No Action", "Individual Action", "Group Action")),
+         efficacy=as.factor(efficacy),
+         alpha=as.factor(alpha))
+predictionData$maxHLB = predict(br.ml, predictionData)
+```
+
+
+```{r}
+p65 = 
+  predictionData %>%
+    filter(efficacy==0.65) %>%
+    mutate(year=maxT/365) %>%
+    ggplot(aes(x=year, y=maxHLB, color=strategy, linetype=alpha)) +
+    geom_line() +
+    labs(
+         x="Years of Infection", y="Severity",
+         color="Strategy",
+         linetype="Alpha") +
+    scale_y_continuous(breaks=seq(0,1,0.1)) +
+    scale_x_continuous(breaks=seq(0,10,1)) +
+    scale_color_viridis(discrete=TRUE, option="turbo")
+
+
+p75 = 
+  predictionData %>%
+    filter(efficacy==0.75) %>%
+    mutate(year=maxT/365) %>%
+    ggplot(aes(x=year, y=maxHLB, color=strategy, linetype=alpha)) +
+    geom_line() +
+    labs(
+         x="Years of Infection", y="Severity",
+         color="Strategy", linetype="Alpha") +
+    scale_y_continuous(breaks=seq(0,1,0.1)) +
+    scale_x_continuous(breaks=seq(0,10,1)) +        
+    scale_color_viridis(discrete=TRUE, option="turbo")
+
+
+
+
+p85 = 
+  predictionData %>%
+    filter(efficacy==0.85) %>%
+    mutate(year=maxT/365) %>%
+    ggplot(aes(x=year, y=maxHLB, color=strategy, linetype=alpha)) +
+    geom_line() +
+    labs(
+         x="Years of Infection", y="Severity",
+         color="Strategy", linetype="Alpha") +
+    scale_y_continuous(breaks=seq(0,1,0.1)) +
+    scale_x_continuous(breaks=seq(0,10,1)) +
+    scale_color_viridis(discrete=TRUE, option="turbo")
+
+
+
+p65
+ggsave("biocalibrate-output/predictedSpread_65.png", dpi=300, width=7, height=5)
+p75
+ggsave("biocalibrate-output/predictedSpread_75.png", dpi=300, width=7, height=5)
+p85
+ggsave("biocalibrate-output/predictedSpread_85.png", dpi=300, width=7, height=5)
+
+```
+
+
+yield curves
+```{r}
+predictionData$yield = exp(-1.85*predictionData$maxHLB)
+```
+
+
+```{r}
+p65 = 
+  predictionData %>%
+    filter(efficacy==0.65) %>%
+    mutate(year=maxT/365) %>%
+    ggplot(aes(x=year, y=yield, color=strategy, linetype=alpha)) +
+    geom_line() +
+    labs(
+         x="Years of Infection", y="Yield",
+         color="Strategy", linetype="Alpha") +
+    scale_y_continuous(breaks=seq(0,1,0.1)) +
+    scale_x_continuous(breaks=seq(0,10,1)) +
+    scale_color_viridis(discrete=TRUE, option="turbo")
+
+
+
+
+p75 = 
+  predictionData %>%
+    filter(efficacy==0.75) %>%
+    mutate(year=maxT/365) %>%
+    ggplot(aes(x=year, y=yield, color=strategy, linetype=alpha)) +
+    geom_line() +
+    labs(
+         x="Years of Infection", y="Yield", 
+         color="Strategy", linetype="Alpha") +
+    scale_y_continuous(breaks=seq(0,1,0.1)) +
+    scale_x_continuous(breaks=seq(0,10,1)) +
+    scale_color_viridis(discrete=TRUE, option="turbo")
+
+
+
+
+p85 = 
+  predictionData %>%
+    filter(efficacy==0.85) %>%
+    mutate(year=maxT/365) %>%
+    ggplot(aes(x=year, y=yield, color=strategy, linetype=alpha)) +
+    geom_line() +
+    labs(
+         x="Years of Infection", y="Yield",
+         color="Strategy", linetype="Alpha") +
+    scale_y_continuous(breaks=seq(0,1,0.1)) +
+    scale_x_continuous(breaks=seq(0,10,1)) +
+    scale_color_viridis(discrete=TRUE, option="turbo")
+
+
+
+
+p65
+ggsave("biocalibrate-output/predictedYield_65.png", dpi=300, width=7, height=5)
+p75
+ggsave("biocalibrate-output/predictedYield_75.png", dpi=300, width=7, height=5)
+p85
+ggsave("biocalibrate-output/predictedYield_85.png", dpi=300, width=7, height=5)
+```
+
+
+```{r}
+predictionData = predictionData %>% filter(maxT <= 1825)
+premiumDF_indv = predictionData %>% 
+                 filter(efficacy == 0.85 & strategy == 'Individual Action') %>% 
+                 group_by(maxT,alpha) %>%
+                 summarize(indvYield = mean(yield))
+premiumDF_group = predictionData %>% 
+                 filter(efficacy == 0.85 & strategy == 'Group Action') %>% 
+                 group_by(maxT,alpha) %>%
+                 summarize(groupYield = mean(yield))
+premiumDF_none = predictionData %>% 
+                 filter(efficacy == 0.85 & strategy == 'No Action') %>% 
+                 group_by(maxT,alpha) %>%
+                 summarize(noneYield = mean(yield))
+premiumDF = left_join(premiumDF_group, premiumDF_indv, by=c("maxT", "alpha"))
+premiumDF_extra = left_join(premiumDF, premiumDF_none, by=c("maxT", "alpha"))
+```
+
+```{r}
+premiumDF_extra = premiumDF_extra %>% mutate(yieldDiff = groupYield - indvYield, noneDiff = groupYield - noneYield)
+premiumDF_extra %>% 
+  ggplot(aes(x=maxT, y=yieldDiff, linetype=alpha)) +
+  geom_line(color="green") +
+  geom_line(aes(x=maxT, y=noneDiff, linetype=alpha), color="red")
+```
+
+Now that we have yield difference curves for alpha values, we want the mean duration of infections
+```{r}
+ wrangled = premiumDF_extra %>% 
+  filter((maxT %% 365) == 100 | (maxT %% 365) == 200 | (maxT %% 365) == 300) %>%
+  mutate(harvest = cumsum(yieldDiff), harvestNone=cumsum(noneDiff)) %>% 
+  group_by(alpha) %>%
+  filter(maxT == max(maxT)) %>% 
+  select(harvest, harvestNone)
+
+alpha0Diff = wrangled$harvest[1]
+alpha1Diff = wrangled$harvest[2]
+alpha0NoneDiff = wrangled$harvestNone[1]
+alpha1NoneDiff = wrangled$harvestNone[2]
+
+
+
+
+```
+```{r}
+fruitPrice = 17.60
+fruitYield = 237.14
+
+alpha0Loss = fruitPrice * fruitYield * alpha0Diff
+alpha1Loss = fruitPrice * fruitYield * alpha1Diff
+alpha0NoneLoss = fruitPrice * fruitYield * alpha0NoneDiff
+alpha1NoneLoss = fruitPrice * fruitYield * alpha1NoneDiff
+meanLoss = (alpha0Loss + alpha1Loss) / 2
+groupPremium = meanLoss / 6 / 5
+groupPremium
+meanNoneLoss = (alpha0NoneLoss + alpha1NoneLoss) / 2
+sprayPremium = meanNoneLoss / 6 / 5
+
+print(paste("Group vs Indv Loss (alpha 0) per year:",alpha0Loss / 5))
+print(paste("Group vs Indv Loss (alpha 1) per year:",alpha1Loss / 5))
+print(paste("Group vs Indv Loss average per year:", ((alpha1Loss / 5) + (alpha0Loss / 5)) / 2))
+print(paste("Group vs No Action Loss (alpha 0) per year:",alpha0NoneLoss / 5))
+print(paste("Group vs No Action Loss (alpha 1) per year:",alpha1NoneLoss / 5))
+print(paste("Group vs No Action Average per year", ((alpha1NoneLoss / 5) + (alpha0NoneLoss / 5)) / 2))
+print(paste("Group Premium vs indv (per spray):", groupPremium))
+print(paste("Group gains vs none(per spray):", sprayPremium))
+
+
+```
+
+
+
+
+
+
+

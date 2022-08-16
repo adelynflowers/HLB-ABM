@@ -1,0 +1,22 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+ABM EV PREDICTION MODEL
+
+Filtering out a lot of noise in calibratenotebook to get only the essentials and manuscript figures/tables
+
+```{r}
+library(tidyverse)
+library(betareg)
+```
+
+We use the varfit specification done forever ago
+```{r}
+load("C:/dev/EconABM/Analysis/ev/varData.Rdata")
+```
+Use the predone summary, local computers can't calculate these residuals
+```{r}
+varFit_s
+```

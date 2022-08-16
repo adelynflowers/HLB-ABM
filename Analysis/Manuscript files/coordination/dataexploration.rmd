@@ -1,0 +1,400 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+EXPLORATORY INFO NOTEBOOK
+======
+```{r}
+library(tidyverse)
+library(dbplyr)
+```
+
+Connect to db
+```{r}
+con = DBI::dbConnect(RPostgres::Postgres(),
+                     host="12.42.204.89",
+                     dbname="citrus",
+                     user="postgres",
+                     password="CitrusABM21")
+
+```
+
+Get tables
+```{r}
+econ = tbl(con,"econ")
+```
+
+I'm interested in some high level views of strategy selection
+```{r}
+df = econ %>%
+        filter(t %% 91 == 0) %>%
+        group_by(t, experiment_id) %>%
+        summarize(
+          na_count = sum(as.integer(sprayingbehavior==1)),
+          ia_count = sum(as.integer(sprayingbehavior==2)),
+          ga_count = sum(as.integer(sprayingbehavior==3)),
+          lambda = max(lambda),
+          alpha_p = max(alpha_perception),
+          infected = sum(as.integer(infected==TRUE)),
+          riskPSum = sum(risk_perception),
+          na_ev = mean(last_na_ev),
+          ia_ev = mean(last_is_ev),
+          ga_ev = mean(last_gs_ev)
+        ) %>%
+        collect()
+```
+Convert columns to numeric for use
+```{r}
+df = df %>%
+  mutate(na_count = as.numeric(na_count),
+         ia_count = as.numeric(ia_count),
+         ga_count = as.numeric(ga_count),
+         infected = as.numeric(infected),
+         riskPSum = as.numeric(riskPSum),
+         na_ev = as.numeric(na_ev),
+         ia_ev = as.numeric(ia_ev),
+         ga_ev = as.numeric(ga_ev))
+```
+```{r}
+df %>%
+  group_by(t) %>%
+  summarize(na_count = sum(na_count),
+            ia_count = sum(ia_count),
+            ga_count = sum(ga_count)) %>%
+  pivot_longer(!t, names_to="strategy", values_to="count") %>%
+  group_by(t) %>%
+  mutate(total=sum(count)) %>%
+  ungroup() %>%
+  mutate(pct=count / total) %>% 
+  ggplot(aes(x=t,y=pct,fill=strategy)) +
+  geom_area()
+  
+
+
+```
+```{r}
+df %>%
+  mutate(lambdaf=as.factor(lambda), alphaPF = as.factor(alpha_p)) %>%
+  group_by(t, lambdaf, alphaPF) %>%
+   summarize(na_count = sum(na_count),
+            ia_count = sum(ia_count),
+            ga_count = sum(ga_count)) %>%
+  pivot_longer(cols=ends_with("count"), names_to="strategy", values_to="count") %>%
+  group_by(t, lambdaf, alphaPF) %>%
+  mutate(total=sum(count)) %>%
+  ungroup() %>%
+  mutate(pct=count / total) %>% 
+  ggplot(aes(x=t,y=pct,fill=strategy)) +
+  geom_area() +
+  facet_grid(rows=vars(lambdaf), cols=vars(alphaPF),   labeller = labeller(.rows = label_both, .cols = label_both))
+```
+
+
+```{r}
+df %>%
+  mutate(lambdaf=as.factor(lambda), alphaPF = as.factor(alpha_p)) %>%
+  filter(lambdaf == 0, alphaPF==1) %>%
+  group_by(t, lambdaf, alphaPF) %>%
+  pivot_longer(cols=ends_with("ev"), names_to="strategy", values_to="ev") %>%
+  group_by(t, lambdaf, alphaPF) %>%
+  ungroup() %>%
+  group_by(t, lambdaf, alphaPF, strategy) %>%
+  summarize(ev = mean(ev)) %>%
+  ggplot(aes(x=t, y=ev, color=strategy)) +
+  geom_line() +
+  facet_grid(rows=vars(lambdaf), cols=vars(alphaPF))
+
+
+```
+
+```{r}
+mnd = read.csv("C:/dev/mndata.csv")
+```
+  
+  
+```{r}
+mnd %>%
+  filter(experiment_id == 5295) %>%
+  pivot_longer(cols=ends_with("ev"), names_to="strategy", values_to="ev") %>%
+  ggplot(aes(x=t,y=ev,color=strategy)) +
+  geom_line() + 
+  facet_wrap(~grove_id)
+```
+```{r}
+mnd %>% 
+  filter(experiment_id == 5295) %>%
+  ggplot(aes(x=t,y=profit,color=as.factor(sprayingbehavior))) +
+  geom_point() +
+  facet_wrap(~grove_id)
+```
+```{r}
+mnd %>%
+  select(t, experiment_id, sprayingbehavior, last_gs_ev, last_is_ev, grove_id) %>%
+  filter(experiment_id == 5295, sprayingbehavior==3) %>%
+  mutate(gap=last_gs_ev - last_is_ev) %>%
+  ggplot(aes(x=t,y=gap)) +
+  geom_line() +
+  facet_wrap(~grove_id) +
+  labs(title="Comparing EV differences where grower chooses coordinated action", subtitle="Experiment 5295",x="Time", y="EV(Group) - EV(Indv)")
+```
+
+
+```{r}
+mnd %>%
+  filter(sprayingbehavior==3) %>%
+  mutate(gap=last_gs_ev - last_is_ev) %>%
+  select(t, grove_id, sprayingbehavior, gap, experiment_id) %>%
+  arrange(desc(gap)) %>%
+  head(50)
+
+
+```
+
+```{r}
+mnd = mnd %>%
+        mutate(gap=last_gs_ev - last_is_ev, invadedGrove = (grove_id == invasion_grove_id))
+
+```
+
+```{r}
+ols = lm(gap ~ infected + invadedGrove + t*lambda*alpha_perception + as.factor(grove_id) + alpha_actual , data=mnd)
+summary(ols)
+```
+
+
+
+```{r}
+mnd %>% 
+  filter(gap > 0) %>%
+  summary()
+```
+
+
+```{r}
+mnd %>%
+  filter(experiment_id==5295,grove_id==1) %>%
+  summary()
+```
+```{r}
+profitData = read.csv("C:/dev/profitCurves.csv")
+summary(profitData)
+```
+```{r}
+profitData = profitData %>%
+              mutate(grove_id=as.factor(grove_id), 
+                     efficacy=as.factor(efficacy),
+                     alpha=as.factor(alpha))
+```
+
+```{r}
+profitData %>%
+  filter(efficacy == 0.85, risk == 1, alpha == 1) %>%
+  pivot_longer(cols=c("na","ia","ga"), names_to="strategy", values_to="ev") %>%
+  ggplot(aes(x=t, y=ev, color=strategy)) +
+  geom_line()
+
+```
+
+```{r}
+profitData %>%
+    filter(efficacy == 0.85, risk == 1, alpha == 1) %>%
+    mutate(gap = ga - ia, group = gap > 0) %>%
+    ggplot(aes(x=t,y=gap,color=group)) +
+    geom_line()
+```
+```{r}
+comparison = mnd %>% 
+  filter(experiment_id == 5295, grove_id==1) %>%
+  select(t, sprayingbehavior, lambda, alpha_perception, risk_perception, last_is_ev, last_gs_ev) %>%
+  mutate(foundHLB_day = 364) %>%
+  filter(t >= foundHLB_day) %>%
+  left_join(
+    profitData %>%
+      filter(alpha==1, risk==1, efficacy==0.85, grove_id=="g01") %>%
+      select(t, ia, ga) %>%
+      mutate(adjT = t - 364) %>%
+      filter(adjT > 0),
+    by=c("t" = "adjT")
+  )
+  
+
+```
+
+
+```{r}
+comparison
+```
+
+```{r}
+profitData %>%
+  filter(alpha==1, risk==1, efficacy==0.85, grove_id=="g01") %>%
+  arrange(ga)
+```
+```{r}
+simdata = read.csv("C:/dev/EconABM/econ_output.csv")
+summary(simdata)
+```
+```{r}
+simdata = simdata %>%
+  mutate(grove_id = as.factor(grove_id))
+```
+
+```{r}
+simdata %>%
+  filter(t %% 91 == 0) %>%
+  ggplot(aes(x=t,y=profit,color=as.factor(behavior))) +
+  geom_point() +
+  facet_wrap(~grove_id)
+```
+
+```{r}
+simdata %>%
+  filter(grove_id == "g20", t %% 91 == 0) %>%
+  filter(behavior != 1) %>%
+  mutate(gap = lastGSEV - lastISEV, group= gap>0, adjustedT = t - foundHLB_day) %>%
+  filter(adjustedT > 0) %>%
+  select(adjustedT, behavior, lastGSEV, lastISEV, foundHLB_day) %>%
+  left_join(profitData %>%
+              filter(alpha==1, grove_id=="g20", efficacy==0.85, risk==1) %>%
+              select(t,ia,ga),
+            by=c("adjustedT"="t"))
+```
+
+```{r}
+profit2 = read.csv("C:/dev/profitCurvesv2.csv")
+summary(profit2)
+```
+```{r}
+profit2 %>%
+  filter(risk==1, alpha==1, t >= 546, foundHLB_day == 546, efficacy==0.85) %>%
+  pivot_longer(cols=c("na","ia","ga"), names_to="mitigate", values_to="sev") %>%
+  bind_rows(profit2 %>%
+          filter(risk==0, alpha==1, t < 546, t==foundHLB_day, efficacy==0.85) %>%
+          pivot_longer(cols=c("na","ia","ga"), names_to="mitigate", values_to="sev")) %>%
+  ggplot(aes(x=t,y=sev,color=mitigate)) +
+  geom_line()
+```
+
+```{r}
+profit2 %>%
+  filter(risk==1, alpha==1, t >= 546, foundHLB_day == 546, efficacy==0.85) %>%
+  bind_rows(profit2 %>%
+          filter(risk==0, alpha==1, t < 546, t==foundHLB_day, efficacy==0.85)) %>%
+  mutate(strategy=as.factor(strategy)) %>%
+  ggplot(aes(x=t,y=ev,color=strategy)) +
+  geom_point()
+```
+
+```{r}
+forwrite = profit2 %>%
+  filter(foundHLB_day != t) %>%
+  mutate(projectingLength = if_else(
+            foundHLB==1,
+            3650-foundHLB_day,
+            3650-t
+            ),
+         projectionStart = if_else(
+           foundHLB==1,
+           t-foundHLB_day,
+           as.integer(0)
+         ))
+write.csv(forwrite,"C:/dev/mnForStata.csv", row.names=FALSE)
+```
+
+
+
+
+```{r}
+profitfix = read.csv("C:/dev/profitCurvesv2.csv")
+summary(profitfix)
+```
+
+```{r}
+pf = 
+  profitfix %>%
+    mutate(efficacy=as.factor(efficacy),
+           gap = ga - ia,
+           strategy=as.factor(strategy),
+           startGap = if_else(
+             foundHLB==1,
+             t-foundHLB,
+             as.integer(0)
+           ))
+    
+```
+
+```{r}
+ols = lm(gap ~ efficacy:risk + efficacy:alpha + efficacy:t + efficacy:startGap, data=pf)
+summary(ols)
+```
+```{r}
+pf %>%
+  mutate(risk=as.factor(risk), 
+         alpha=as.factor(alpha), 
+         group = gap > 0,
+         headStart = if_else(
+           foundHLB == 1,
+           t-foundHLB_day,
+           as.integer(0),
+         ),
+         simulatedDays = 3650-t) %>%
+  filter(efficacy == 0.85) %>%
+  ggplot(aes(x=simulatedDays,y=headStart,fill=group)) +
+  geom_tile() +
+  facet_grid(rows=vars(alpha), cols=vars(risk), labeller=label_both) +
+  labs(title="Is group action chosen by number of days simulated and head start", x="Number of days simulated", y="Head Start")
+```
+
+```{r}
+pf %>%
+  mutate(risk=as.factor(risk), 
+         alpha=as.factor(alpha), 
+         group = gap > 0,
+         headStart = if_else(
+           foundHLB == 1,
+           t-foundHLB_day,
+           as.integer(0),
+         ),
+         simulatedDays = 3650-t) %>%
+  filter(efficacy == 0.85, risk == 1, alpha == 1) %>%
+  ggplot(aes(x=simulatedDays,y=headStart,fill=group)) +
+  geom_tile() +
+  facet_grid(rows=vars(alpha), cols=vars(risk)) +
+  labs(title="Is group action chosen by number of days simulated and head start", x="Number of days simulated", y="Head Start")
+```
+
+```{r}
+ecnr = read.csv("C:/dev/ECNR.csv")
+summary(ecnr)
+```
+```{r}
+ecnr %>%
+  filter(efficacy == 0.85, risk==1, alpha==1, strategy==2, foundHLB_day < 0) %>%
+  mutate(projectionLength = 3650 - t,
+         headStart = t - foundHLB_day,
+         headStart = as.factor(headStart)) %>%
+  ggplot(aes(x=projectionLength)) +
+  geom_line(aes(y=er), color="green") +
+  geom_line(aes(y=c), color="red") 
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

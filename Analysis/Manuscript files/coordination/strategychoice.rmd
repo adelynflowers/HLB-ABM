@@ -1,0 +1,187 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+CHOICE SELECTION ANALYSIS AND MODELING
+
+Trying to hash this out
+
+```{r}
+library(nnet)
+library(mlogit)
+library(tidyverse)
+library(stargazer)
+library(viridis)
+library(scatterplot3d)
+```
+
+Labeller helper func
+```{r}
+niceLabeller = function(variable, value) {
+  fixedvar = str_to_title(gsub("_", " ", variable))
+  full = paste(fixedvar, ": ", value, sep="")
+}
+
+```
+First: opportunity cost graph
+
+```{r}
+opc = read.csv("C:/dev/profitBounds.csv")
+opc %>%
+  ggplot(aes(x=premium,y=groupPct)) +
+  geom_line() +
+  labs(x="Per-spray opportunity cost", y="% of Growers who choose group action") 
+ggsave("strategychoice-output/oppcost.png", dpi=300, height=5, width=7)
+```
+```{r}
+print(max(opc$premium))
+```
+
+
+Strategy choice graph
+```{r}
+con = DBI::dbConnect(RPostgres::Postgres(),
+                     host="12.42.204.89",
+                     dbname="citrus",
+                     user="postgres",
+                     password="CitrusABM21")
+
+```
+
+Get table
+```{r}
+econ = tbl(con,"econ")
+```
+
+
+
+plot
+```{r}
+plt = econ %>%
+      filter(t %% 91 == 0) %>%
+      group_by(t, experiment_id) %>%
+      summarize(
+        na_count = sum(as.integer(sprayingbehavior==1)),
+        ia_count = sum(as.integer(sprayingbehavior==2)),
+        ga_count = sum(as.integer(sprayingbehavior==3)),
+        lambda = max(lambda),
+        alpha_perception = max(alpha_perception),
+        infected = sum(as.integer(infected==TRUE)),
+        riskPSum = sum(risk_perception),
+        na_ev = mean(last_na_ev),
+        ia_ev = mean(last_is_ev),
+        ga_ev = mean(last_gs_ev)
+      ) %>%
+      mutate(na_count = as.numeric(na_count),
+       ia_count = as.numeric(ia_count),
+       ga_count = as.numeric(ga_count),
+       infected = as.numeric(infected),
+       riskPSum = as.numeric(riskPSum),
+       na_ev = as.numeric(na_ev),
+       ia_ev = as.numeric(ia_ev),
+       ga_ev = as.numeric(ga_ev)) %>%
+      group_by(t) %>%
+      summarize(na_count = sum(na_count),
+              ia_count = sum(ia_count),
+              ga_count = sum(ga_count)) %>%
+      pivot_longer(cols=ends_with("count"), names_to="strategy", values_to="count") %>%
+      group_by(t) %>%
+      mutate(total=sum(count)) %>%
+      ungroup() %>%
+      mutate(pct=count / total) %>% 
+      ggplot(aes(x=t,y=pct,fill=strategy)) +
+      geom_area() +
+      labs(
+           x="Days since start of simulation",
+           y="Mean Strategy Proportion",
+           fill="Strategy") +
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+            panel.background = element_blank(), axis.line = element_blank()) +
+      scale_fill_viridis(discrete=TRUE, option="turbo", limits=c("na_count", "ia_count", "ga_count"),
+                          labels=c("No Action", "Individual Action", "Group Action"))
+plt
+ggsave("strategychoice-output/pmaChoice.png", width=9, height=7, dpi=300)
+    
+```
+
+Mlogit
+
+```{r}
+choicedf = read.csv("C:/dev/updatedChoiceData.csv")
+```
+
+```{r}
+choicedf = 
+  choicedf %>% 
+  mutate(
+    grove_id = as.factor(grove_id),
+    invasion_grove_id = as.factor(invasion_grove_id),
+    invasion_modality = as.factor(invasion_modality),
+    indv_id = paste(grove_id,experiment_id,sep="_"),
+    choice_id = paste(indv_id, t, sep="_")
+  )
+
+```
+
+```{r}
+choicelogit = dfidx(choicedf, shape="wide", choice="sprayingbehavior", idx=list(c("choice_id", "indv_id")))
+
+```
+
+```{r}
+mdl = mlogit(sprayingbehavior ~ 0 | lambda + alpha_perception + premium + meanNeighborLambda + meanNeighborAP + meanNeighborPremium + invasion_grove_id + grove_id + invasion_modality, data=choicelogit)
+```
+Nnet used for output generation
+```{r}
+mdl.nnet = multinom(sprayingbehavior ~ lambda + alpha_perception + premium + meanNeighborLambda + meanNeighborAP + meanNeighborPremium+ invasion_grove_id + grove_id + invasion_modality, data=choicedf)
+```
+
+```{r}
+summary(mdl)
+summary(mdl.nnet)
+```
+Prepare mlogit for stargazer
+```{r}
+stg.mlogit <- mdl.nnet
+cf <- matrix(stg.mlogit$wts, nrow=29)
+cf[2:nrow(cf), 2:ncol(cf)] <- t(matrix(coef(mdl),nrow=2))
+# Substitution of probabilities
+stg.mlogit$wts <- c(cf)
+stg.mlogit$fitted.values <- mdl$probabilities
+```
+
+
+```{r}
+stargazer(mdl.nnet, stg.mlogit,
+          type="text",
+          model.numbers = FALSE,
+          column.labels=c("Nnet", "Mlogit"),
+          column.separate=c(2,2),
+          omit=c("invasion", "grove"),
+          out="strategychoice-output/multinom.tex",
+          title="Multinomial logit results for strategy choice estimation",
+          label="Tab:InformationConfidence-StrategyChoice-multinom",
+          dep.var.labels = c("Indv.", "Group", "Indv.", "Group"),
+          omit.stat=c("aic"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

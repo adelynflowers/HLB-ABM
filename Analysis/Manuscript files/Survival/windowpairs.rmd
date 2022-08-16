@@ -1,0 +1,191 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Load libraries
+
+```{r}
+library(readr)
+library(tidyverse)
+library(survival)
+library(ggfortify)
+library(ranger)
+library(survminer)
+library(stargazer)
+library(viridis)
+```
+FIRST, WINDOW PAIRS
+
+Gather files
+
+```{r message = FALSE}
+basePath = "C:/dev/EconABM/Analysis/survival_analysis/windowPairs-all"
+setwd(basePath)
+df = list.files(basePath, pattern="*.csv") %>% map_df(~read_csv(.))
+df$groveID = as.factor(df$groveID)
+```
+
+```{r}
+stargazer(as.data.frame(df %>% select(t, E, window, efficacy)),
+          type="latex", 
+          summary.stat = c("n","sd","mean", "min", "max"),
+          title="Summary of Full Coordination Data")
+```
+
+
+Plot stratified KM curves
+
+```{r}
+windows = c(7,14,21,40,60,80,100)
+efficacies = c(0.65,0.75,0.85)
+
+ggDF = data.frame(Time=integer(), Surv=double(), CumHaz=double(), Hazard=double(), Efficacy=double(), Window=integer())
+for (w in windows) {
+  for (e in efficacies) {
+    km = df %>% filter (efficacy == e, window == w)
+    km = survfit(Surv(t,E) ~ 1, data=km)
+    hazardtable = broom::tidy(km) %>% filter(n.event > 0) %>% mutate(hazard = n.event / (n.risk * (lead(time) - time)))
+    km_df = data.frame(time=km$time, Surv=km$surv, CumHaz=km$cumhaz, Efficacy=rep(e, length(km$time)), Window=rep(w, length(km$time)))
+    km_df = left_join(km_df, hazardtable, by=c("time"))
+    km_df = km_df %>% select(time, Surv, CumHaz, hazard, Efficacy, Window)
+    names(km_df) =  c("Time", "Surv", "CumHaz", "Hazard", "Efficacy", "Window")
+    ggDF = rbind(ggDF, km_df)
+  }
+}
+
+ggDF$Efficacy = as.factor(ggDF$Efficacy)
+ggDF$Window = as.factor(ggDF$Window)
+
+```
+
+```{r}
+ggDF %>%
+  ggplot(aes(x=Time, y=Surv, color=Efficacy, linetype=Window)) +
+  geom_line() +
+  xlab("Days since start of simulation") +
+  ylab("Survival Probability") +
+  scale_color_viridis(discrete=TRUE, option="turbo")
+ggsave("windowpairs-output/windowPairsSurvival.png", dpi=300, width=7, height=5)
+
+```
+Cumulative Hazard plots
+```{r}
+ggDF %>%
+  ggplot(aes(x=Time, y=CumHaz, color=Efficacy, linetype=Window)) +
+  geom_line()
+
+```
+
+Hazard plots
+```{r}
+oneLine = ggDF %>% filter(Efficacy==0.85, Window==7) 
+ggDF %>%
+  filter(Efficacy==0.85, Window==7) %>%
+  ggplot(aes(x=Time, y=Hazard, color=Efficacy)) +
+  geom_point()
+```
+
+
+
+And now analysis. First testing a baseline cox model
+```{r}
+combos = data.frame(model=character(), AIC_I=double())
+coxfit = coxph(Surv(t,E) ~ window + efficacy + window*efficacy + groveID, data=df)
+summary(coxfit)
+extractAIC(coxfit)
+combos = combos %>% add_row(model="cox", AIC_I=extractAIC(coxfit)[2])
+```
+
+And now each of the standard distributions included with the package. First with interaction term
+```{r}
+
+for (dis in c("weibull", "exponential", "gaussian","logistic","lognormal","loglogistic")) {
+  print(dis)
+  fit = survreg(Surv(t,E) ~ efficacy + window + window*efficacy + groveID, data=df, dist=dis)
+  print(summary(fit))
+  print(extractAIC(fit))
+  combos = combos %>% add_row(model=dis, AIC_I = extractAIC(fit)[2])
+}
+```
+```{r}
+df$efficacy = as.factor(df$efficacy)
+w_fit = survreg(Surv(t,E) ~ efficacy + window + window*efficacy + groveID, data=df, dist="weibull")
+e_fit = survreg(Surv(t,E) ~ efficacy + window + window*efficacy + groveID, data=df, dist="exponential")
+g_fit = survreg(Surv(t,E) ~ efficacy + window + window*efficacy + groveID, data=df, dist="gaussian")
+l_fit = survreg(Surv(t,E) ~ efficacy + window + window*efficacy + groveID, data=df, dist="logistic")
+ln_fit = survreg(Surv(t,E) ~ efficacy + window + window*efficacy + groveID, data=df, dist="lognormal")
+ll_fit = survreg(Surv(t,E) ~ efficacy + window + window*efficacy + groveID, data=df, dist="loglogistic")
+stargazer(w_fit,e_fit,g_fit,l_fit,ln_fit,ll_fit, 
+          align=TRUE, omit=c("groveID*"), no.space=TRUE,
+          float.env = "sidewaystable",
+          title="Window Pair Interaction",
+          column.labels = c("Weibull", "Exponential", "Gaussian", "Logistic", "Lognormal", "Loglogistic"),
+          object.names=FALSE,
+          model.names=FALSE,
+          model.numbers=FALSE)
+
+```
+Compare AIC across models
+```{r}
+print(combos)
+
+```
+ 
+ 
+ 
+ again without interaction term
+```{r}
+combos_ni = data.frame(model=character(), AIC_NI=double())
+coxfit = coxph(Surv(t,E) ~ window + efficacy + groveID, data=df)
+summary(coxfit)
+extractAIC(coxfit)
+combos_ni = combos_ni %>% add_row(model="cox", AIC_NI=extractAIC(coxfit)[2])
+```
+```{r}
+
+for (dis in c("weibull", "exponential", "gaussian","logistic","lognormal","loglogistic")) {
+  print(dis)
+  fit = survreg(Surv(t,E) ~ efficacy + window + groveID, data=df, dist=dis)
+  print(summary(fit))
+  print(extractAIC(fit))
+  combos_ni = combos_ni %>% add_row(model=dis, AIC_NI=extractAIC(fit)[2])
+}
+```
+```{r}
+w_fit = survreg(Surv(t,E) ~ efficacy + window + groveID, data=df, dist="weibull")
+e_fit = survreg(Surv(t,E) ~ efficacy + window + groveID, data=df, dist="exponential")
+g_fit = survreg(Surv(t,E) ~ efficacy + window + groveID, data=df, dist="gaussian")
+l_fit = survreg(Surv(t,E) ~ efficacy + window + groveID, data=df, dist="logistic")
+ln_fit = survreg(Surv(t,E) ~ efficacy + window + groveID, data=df, dist="lognormal")
+ll_fit = survreg(Surv(t,E) ~ efficacy + window + groveID, data=df, dist="loglogistic")
+stargazer(w_fit,e_fit,g_fit,l_fit,ln_fit,ll_fit, 
+          align=TRUE, omit=c("groveID*"), no.space=TRUE,
+          float.env = "sidewaystable",
+          title="Window Pair Linear",
+          column.labels = c("Weibull", "Exponential", "Gaussian", "Logistic", "Lognormal", "Loglogistic"),
+          object.names=FALSE,
+          model.names=FALSE,
+          model.numbers=FALSE)
+```
+```{r}
+aic_table = left_join(combos, combos_ni, by=c("model"))
+print(aic_table)
+```
+
+
+Since the best model is weibull let's look more closely
+```{r}
+df$efficacy = as.factor(df$efficacy)
+wfit = survreg(Surv(t,E) ~ efficacy + window + groveID, data=df, dist="weibull")
+wfit_i = survreg(Surv(t,E) ~ efficacy + window + window*efficacy + groveID, data=df, dist="weibull")
+stargazer(wfit,wfit_i, 
+          align=TRUE, omit=c("groveID*"), no.space=TRUE,
+          title="Weibull regression output for full coordination specifications",
+          label="Tab:windowPair-coeff-interaction",
+          column.labels = c("Weibull(Linear)", "Weibull(Interaction)"),
+          object.names=FALSE,
+          model.names=FALSE,
+          model.numbers=FALSE)
+
+```

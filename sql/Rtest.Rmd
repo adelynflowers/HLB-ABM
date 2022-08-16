@@ -1,0 +1,241 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(readr)
+library(dbplyr)
+```
+
+First with regular dplyr
+```{r}
+sample_bio = read.csv("~/dev/EconABM/Analysis/GridSnaps/2021-09-21-21.35.10.570944_m1_g0_bio.csv")
+```
+
+```{r}
+groveRows = 11;
+groveRowLength = 25;
+s_bio = sample_bio %>% slice_sample(n=10000)
+s_bio %>%
+  arrange(t,i,j) %>%
+  mutate(groveID = paste("g",i%/%groveRows, j%/%groveRowLength,sep="")) %>%
+  group_by(groveID, t) %>%
+  summarize(hlbSeverity=max(hlbSeverity), e= hlbSeverity > 0) %>%
+  filter( (t==max(t) & e==FALSE) | (e==TRUE) ) %>%
+  group_by(groveID) %>%
+  summarize(t=min(t), e=max(e))
+```
+```{r}
+s_bio %>%
+  arrange(t,i,j) %>%
+  mutate(groveID = paste("g",i%/%groveRows, j%/%groveRowLength,sep="")) %>%
+  group_by(groveID, t) %>%
+  summarize(hlbSeverity=max(hlbSeverity), e= hlbSeverity > 0) %>%
+  filter(e==TRUE & groveID=="g00") %>%
+  arrange(t)
+  
+
+```
+
+```{r}
+con <- DBI::dbConnect(RPostgres::Postgres(), 
+  host = "12.42.204.89",
+  user = "postgres",
+  dbname = "citrus",
+  password = rstudioapi::askForPassword("Database password")
+)
+```
+
+```{r}
+bio = tbl(con,"bio")
+experiments = tbl(con,"experiments")
+sets = tbl(con,"simulation_sets")
+clusters = tbl(con, "simulation_clusters")
+survival = tbl(con, "survival")
+econ = tbl(con, "econ")
+```
+
+
+
+Subquery design
+```{r}
+econ %>% 
+  select(t, experiment_id, i, j, sprayingBehavior) %>%
+  mutate(grove_id=paste("g",i,j)) %>%
+  left_join(
+     econ %>% 
+          select(t,i,j,sprayingBehavior, experiment_id) %>%
+          mutate(spraying= sprayingBehavior > 1) %>%
+          group_by(t, experiment_id) %>%
+          summarize(alphaCount = sum(spraying)), 
+     by=c("t","experiment_id")) %>%
+  mutate(spraying = sprayingBehavior > 1, 
+         actualAlpha = (alphaCount - spraying) / 8) %>%
+  select(t,grove_id, actualAlpha, sprayingBehavior, experiment_id) %>%
+  show_query()
+     
+```
+
+survival conversion
+
+```{r}
+desiredExperiment = 18
+bio %>%
+  filter(experiment_id == desiredExperiment) %>%
+  mutate(grove_i = floor(i/11), grove_j = floor(j/25), grove_id=paste("g",grove_i,grove_j,sep="")) %>%
+  group_by(grove_id, t, experiment_id) %>%
+  mutate(e=hlb_severity > 0) %>%
+  summarize(hlb_severity=max(hlb_severity), e=max(e)) %>%
+  filter( (t==max(t) & e==FALSE) | (e==TRUE) ) %>%
+  group_by(grove_id, experiment_id) %>%
+  summarize(t=min(t), e=max(e)) %>%
+  left_join(
+   econ %>% 
+      filter(experiment_id == desiredExperiment) %>%
+      select(t, experiment_id, i, j, sprayingBehavior) %>%
+      mutate(grove_id=paste("g",i,j)) %>%
+      left_join(
+         econ %>% 
+              filter(experiment_id == desiredExperiment) %>%
+              select(t,i,j,sprayingBehavior, experiment_id) %>%
+              mutate(spraying= sprayingBehavior > 1) %>%
+              group_by(t, experiment_id) %>%
+              summarize(alphaCount = sum(spraying)), 
+         by=c("t","experiment_id")) %>%
+      mutate(spraying = sprayingBehavior > 1, 
+             actualAlpha = (alphaCount - spraying) / 8) %>%
+      select(t,grove_id, actualAlpha, sprayingBehavior, experiment_id),
+      by=c("t","grove_id", "experiment_id")) %>%
+    rename(alpha = actualAlpha) %>%
+    select(t, grove_id, sprayingBehavior, alpha, e, experiment_id) %>%
+    show_query()
+
+```
+
+
+NEW SURVIVAL
+```{r}
+econ %>%
+  left_join(experiments, by=c("experiment_id")) %>%
+  left_join(sets, by=c("set_id")) %>%
+  filter(cluster_id == 18) %>%
+  filter( (t==max(t) & infected==FALSE) | (infected==TRUE) ) %>%
+  group_by(grove_id, experiment_id) %>%
+  summarize(t=min(t)) %>%
+  left_join(econ, by=c("grove_id","t","experiment_id")) %>%
+  select(t, grove_id, sprayingbehavior, alpha_actual, infected, experiment_id) %>%
+  show_query()
+```
+
+
+expected value
+
+
+subquery
+```{r}
+ bio %>%
+      mutate(grove_i = floor(i/11), grove_j = floor(j/25), grove_id=paste("g",grove_i,grove_j,sep="")) %>%
+      group_by(grove_id, experiment_id) %>%
+      filter(hlb_severity > 0) %>%
+      summarize(initialInfectionDay = min(t)) %>%
+      collect()
+```
+
+```{r}
+ econ %>%
+    filter(experiment_id == 18) %>%
+    select(t, experiment_id, i, j, sprayingBehavior) %>%
+    mutate(grove_id=paste("g",i,j, sep="")) %>%
+    left_join(
+       econ %>%
+            filter(experiment_id == 18) %>%
+            select(t,i,j,sprayingBehavior, experiment_id) %>%
+            mutate(spraying= sprayingBehavior > 1) %>%
+            group_by(t, experiment_id) %>%
+            summarize(alphaCount = sum(spraying)),
+       by=c("t","experiment_id")) %>%
+    mutate(spraying = sprayingBehavior > 1,
+           alpha = (alphaCount - spraying) / 8)
+```
+
+
+```{r}
+bio %>%
+  filter(experiment_id == 18) %>%
+  select(t, i, j, hlb_severity, experiment_id) %>%
+  mutate(grove_i = floor(i/11), grove_j = floor(j/25), grove_id=paste("g",grove_i,grove_j,sep="")) %>%
+  inner_join(
+    bio %>%
+      filter(experiment_id == 18) %>%
+      select(t, i, j, hlb_severity, experiment_id) %>%
+      mutate(grove_i = floor(i/11), grove_j = floor(j/25), grove_id=paste("g",grove_i,grove_j,sep="")) %>%
+      group_by(grove_id, experiment_id) %>%
+      filter(hlb_severity > 0) %>%
+      summarize(initialInfectionDay = min(t)),
+      by=c("grove_id", "experiment_id")  
+  ) %>%
+  filter(t >= initialInfectionDay) %>%
+  mutate(relT = t - initialInfectionDay) %>%
+  group_by(grove_id, experiment_id, t, relT) %>%
+  summarize(hlb_severity = mean(hlb_severity)) %>%
+  left_join(
+   econ %>%
+    filter(experiment_id == 18) %>%
+    select(t, experiment_id, i, j, sprayingBehavior) %>%
+    mutate(grove_id=paste("g",i,j, sep="")) %>%
+    left_join(
+       econ %>%
+            filter(experiment_id == 18) %>%
+            select(t,i,j,sprayingBehavior, experiment_id) %>%
+            mutate(spraying= sprayingBehavior > 1) %>%
+            group_by(t, experiment_id) %>%
+            summarize(alphaCount = sum(spraying)),
+       by=c("t","experiment_id")) %>%
+    mutate(spraying = sprayingBehavior > 1,
+           alpha = (alphaCount - spraying) / 8),
+    by=c("t","grove_id", "experiment_id")) %>%
+    group_by(grove_id, experiment_id, relT) %>%
+    select(grove_id, relT, hlb_severity, sprayingBehavior, alpha, experiment_id) %>%
+    show_query()
+```  
+  
+```{r}
+econ %>%
+  left_join(experiments, by=c("experiment_id")) %>%
+  left_join(sets, by=c("set_id")) %>%
+  filter(cluster_id == 18) %>%
+  left_join(econ %>%
+              left_join(experiments, by=c("experiment_id")) %>%
+              left_join(sets, by=c("set_id")) %>%
+              filter(cluster_id == 18, infected==TRUE) %>%
+              group_by(grove_id, experiment_id) %>%
+              summarize(initialInfectionDay = min(t)) %>%
+              select(grove_id, experiment_id, initialInfectionDay),
+            by=c("grove_id", "experiment_id")) %>%
+  filter(t >= initialInfectionDay) %>%
+  mutate(relT = t - initialInfectionDay) %>%
+  select(relT, grove_id, experiment_id, alpha_actual, sprayingbehavior) %>%
+  show_query()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

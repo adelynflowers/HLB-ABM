@@ -1,0 +1,161 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+EXPECTED PROFIT ESTIMATION
+
+Load required libraries
+```{r}
+library(tidyverse)
+library(dbplyr)
+library(stargazer)
+library(plm)
+library(viridis)
+```
+
+Labeller helper func
+```{r}
+niceLabeller = function(variable, value) {
+  fixedvar = str_to_title(gsub("_", " ", variable))
+  full = paste(fixedvar, ": ", value, sep="")
+}
+
+```
+
+You can get it from db but using a local file for speed
+```{r}
+econ = read.csv("C:/dev/maxEcon.csv")
+```
+
+Cumulative data
+```{r}
+df = 
+  econ %>% 
+      group_by(experiment_id) %>%
+      mutate(numInfected = sum(as.integer(infected==TRUE))) %>%
+      ungroup() %>%
+      mutate(
+        numInfectedNeighbors = numInfected - as.integer(infected==TRUE),
+        daysFound = if_else(foundHLB==TRUE, 1825 - foundHLB_day, 0),
+        grove_id = as.factor(grove_id))  
+  
+```
+
+```{r}
+summary(df)
+```
+
+```{r}
+df %>%
+  group_by(alpha_perception, lambda) %>%
+  summarize(
+    lambda = mean(lambda),
+    alpha_perception = mean(alpha_perception),
+    profit = mean(profit)
+  ) %>%
+  ggplot(aes(x=lambda,y=alpha_perception,fill=profit)) +
+  geom_tile() +
+  scale_fill_viridis(option="D") +
+  labs(x="Lambda", y="Alpha Perception", title="Mean Cumulative Profit by Alpha Perception, Lambda", fill="Profit") +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+            panel.background = element_blank(), axis.line = element_blank())
+```
+
+
+```{r}
+df = 
+  df %>%
+    mutate(invasion_grove_id = as.factor(invasion_grove_id),
+           invasion_modality = as.factor(invasion_modality),
+           grove_id = as.factor(grove_id), 
+           numInfectedNeighbors = as.integer(numInfectedNeighbors))
+
+df = 
+  df %>%
+  group_by(experiment_id) %>%
+  mutate(sumLambda = sum(lambda),
+         sumAP = sum(alpha_perception),
+         sumPremium = sum(premium)) %>%
+  ungroup() %>%
+  mutate(meanNeighborLambda = (sumLambda - lambda)/8,
+         meanNeighborAP = (sumAP - alpha_perception)/8,
+         meanNeighborPremium = (sumPremium - premium)/8) %>%
+  mutate(grove_idn = gsub("g","",grove_id),
+         grove_idn = as.numeric(grove_idn),
+         grower_x = grove_idn %% 10,
+         grower_y = floor(grove_idn/10),
+         invasion_grove_id = as.numeric(invasion_grove_id),
+         invasion_x = invasion_grove_id %% 10,
+         invasion_y = floor(invasion_grove_id / 10),
+         distanceToInitialInfection = sqrt( (grower_x - invasion_x)^2 + (grower_y - invasion_y)^2),
+         invasion_grove_id = as.factor(invasion_grove_id))
+```
+
+
+```{r}
+ols.p = lm(profit ~ lambda + alpha_perception + premium + 
+           meanNeighborLambda + meanNeighborAP + meanNeighborPremium +
+           invasion_grove_id*invasion_modality*grove_id, data=df)
+ols.r = lm(returns ~ lambda + alpha_perception + premium + 
+           meanNeighborLambda + meanNeighborAP + meanNeighborPremium +
+           invasion_grove_id*invasion_modality*grove_id, data=df)
+```
+
+```{r}
+stargazer(ols.p, ols.r, 
+          omit=c("invasion", "grove"), 
+          type="text",
+          out="cumulativeprofit-output/regtable.tex",
+          title="Cumulative profit regression output, grower level",
+          label="Tab:InformationConfidence-CumulativeProfit-regtable")
+```
+Now PMA level
+```{r}
+pma = 
+  df %>%
+  mutate(
+    invasion_grove_id = as.numeric(invasion_grove_id),
+    invasion_modality = as.numeric(invasion_modality)
+  ) %>%
+  group_by(experiment_id) %>%
+  summarize(
+    lambda = sum(lambda),
+    alpha_perception = sum(alpha_perception),
+    premium = sum(premium),
+    invasion_grove_id = mean(invasion_grove_id),
+    invasion_modality = mean(invasion_modality),
+    profit = sum(profit),
+    returns = sum(returns)
+  ) %>%
+  mutate(
+    invasion_grove_id = as.factor(invasion_grove_id),
+    invasion_modality = as.factor(invasion_modality)
+  )
+```
+
+estimate
+```{r}
+pma.p = lm(profit ~ lambda + alpha_perception + premium + invasion_grove_id*invasion_modality, data=pma)
+pma.r = lm(returns ~ lambda + alpha_perception + premium + invasion_grove_id*invasion_modality, data=pma)
+```
+
+```{r}
+stargazer(pma.p, pma.r, 
+          omit=c("invasion", "grove"), 
+          type="text",
+          out="cumulativeprofit-output/regtable-pma.tex",
+          title="Cumulative profit regression output, PMA level",
+          label="Tab:InformationConfidence-CumulativeProfit-regtable-pma")
+```
+
+
+
+
+
+
+
+
+
+
+

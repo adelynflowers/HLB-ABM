@@ -1,0 +1,202 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+WINDOW PAIR EV ANALYSIS
+
+This file contains the analysis required for testing the effects of window and efficacy on in grove spread.
+
+
+
+
+Load required libraries
+```{r}
+library(tidyverse)
+library(dbplyr)
+library(betareg)
+library(stargazer)
+```
+
+
+Data is contained in the database @ "windowpairs_ev_import", but im gonna use a local file here for convenience
+
+
+Labeller helper func
+```{r}
+niceLabeller = function(variable, value) {
+  fixedvar = str_to_title(gsub("_", " ", variable))
+  full = paste(fixedvar, ": ", value, sep="")
+}
+
+```
+Manipulate data and bring it down for local modelling. Change efficacy to factor.
+```{r}
+df = read.csv("C:/dev/windowPairslegacy.csv")
+```
+
+```{r}
+df %>%
+  mutate(efficacy=as.factor(efficacy), window=as.factor(window)) %>%
+  group_by(window,efficacy, relT) %>%
+  summarize(hlb=mean(adjustedSeverity)) %>%
+  ggplot(aes(x=relT,y=hlb, color=efficacy, linetype=window)) +
+  geom_line() + 
+  labs(
+       y="Mean HLB Severity", 
+       x="Days Since Initial Infection",
+       color="Efficacy",
+       linetype="Window") +
+  scale_y_continuous(breaks=seq(0,1,by=0.1)) +
+  scale_color_viridis(discrete=TRUE, option="turbo") +
+  theme_grey()
+ggsave("windowpairs-output/meanSpread.jpg", dpi=300, width=7, height=5)
+```
+
+Transform in use with max EV models
+```{r}
+df = df %>%
+      group_by(pid) %>%
+      summarize(maxHLB=max(adjustedSeverity),
+                efficacy=max(efficacy),
+                window=max(window),
+                maxT=max(relT)
+                ) %>%
+      mutate(efficacy=as.factor(efficacy))
+```
+
+Since response variable is bound on [0,1], we use a beta regression for estimation. We test the 3 different estimators available: maximum likelihood, bias correction, bias reduction. Throw in an OLS for shiggles
+
+```{r}
+fm = maxHLB ~ window*efficacy + maxT*efficacy
+ols = lm(fm, data=df)
+br.ml = betareg(fm, data=df, type="ML")
+br.bc = betareg(fm, data=df, type="BC")
+br.br = betareg(fm, data=df, type="BR")
+```
+
+Observe outputs
+```{r}
+summary(ols)
+print(summary(br.ml))
+summary(br.bc)
+summary(br.br)
+```
+Check AIC/BIC
+```{r}
+scores = data.frame(Score=character(), OLS=numeric(), ML=numeric(), BR=numeric(), BC=numeric())
+AIC = data.frame(Score="AIC", OLS=AIC(ols), ML=AIC(br.ml), BR=AIC(br.br), BC=AIC(br.bc))
+BIC = data.frame(Score="BIC", OLS=BIC(ols), ML=BIC(br.ml), BR=BIC(br.br), BC=BIC(br.bc))
+scores = rbind(scores,AIC,BIC)
+print(scores)
+```
+
+Since bias reduction is best, let's construct a matrix of response transformed coefficients. Unsure of an easy way to do this
+```{r}
+tcoefs = data.frame(Base=character(), e65=character(), e75=character(), e85=character(), window=character(), maxT=character())
+
+for (e in c(0.65,0.75,0.85)) {
+  base = data.frame(window=60, efficacy=factor(e, levels=c(0.65,0.75,0.85)), maxT=1200)
+  data.e65 = base
+  data.e65[[2]] = factor(0.65, levels=c(0.65,0.75,0.85))
+  data.e75 = base
+  data.e75[[2]] = factor(0.75, levels=c(0.65,0.75,0.85))
+  data.e85 = base
+  data.e85[[2]] = factor(0.85, levels=c(0.65,0.75,0.85))
+  data.window = base
+  data.window[[1]] = 61
+  data.maxT = base
+  data.maxT[[3]] = 1201
+  row = data.frame(Base=e, 
+                   e65= -predict(br.br, base) + predict(br.br, data.e65),
+                   e75=-predict(br.br, base) + predict(br.br, data.e75),
+                   e85=-predict(br.br, base) + predict(br.br, data.e85),
+                   window = -predict(br.br,base) + predict(br.br, data.window),
+                   maxT = -predict(br.br, base) + predict(br.br, data.maxT)
+                   )
+  tcoefs=rbind(tcoefs,row)
+}
+print(tcoefs)
+```
+
+Stargazer tables
+
+
+DF summary
+```{r}
+stargazer(as.data.frame(df %>% filter(efficacy==0.65) %>% select(maxHLB, maxT)), type="text",title="65% Efficacy", align=TRUE)
+stargazer(as.data.frame(df %>% filter(efficacy==0.75) %>% select(maxHLB, maxT)), type="text",title="75% Efficacy", align=TRUE)
+stargazer(as.data.frame(df %>% filter(efficacy==0.85) %>% select(maxHLB, maxT)), type="text",title="85% Efficacy", align=TRUE)
+
+```
+Comparing 3 models
+```{r}
+stargazer(ols, br.ml,br.bc,br.br, 
+          type="latex",
+          title="Regression output for Full Coordination In-Grove Spread Models",
+          label="Tab:ExpectedValue-WindowPair-regressioncomparison",
+          column.labels = c("OLS", "ML", "BC", "BR"),
+          add.lines=list(
+            c("AIC", round(AIC(ols),digits=5), round(AIC(br.ml),digits=5), round(AIC(br.bc),digits=5), round(AIC(br.br),digits=5)),
+            c("BIC", round(BIC(ols),digits=5), round(BIC(br.ml),digits=5), round(BIC(br.bc),digits=5), round(BIC(br.br),digits=5))
+            ),
+          object.names=FALSE,
+          model.names=FALSE,
+          model.numbers=FALSE)
+```
+
+Coefficient table
+```{r}
+stargazer(tcoefs, summary=FALSE, type="text", rownames=FALSE, digits=7)
+```
+
+Now that it's log i think we have to graph it
+```{r}
+predictionData = data.frame(efficacy=numeric(), window=numeric(), maxT=numeric())
+for (e in c(0.65,0.75,0.85)) {
+  for (w in c(7,14,21,40,60,80,100)) {
+    loopData = data.frame(efficacy=numeric(), window=numeric(), maxT=numeric())
+    for (t in 1:1825) {
+      data = data.frame(efficacy=e, window=w, maxT=t)
+      loopData = rbind(loopData, data)
+    }
+    predictionData = rbind(predictionData,loopData)
+  }
+}
+predictionData$efficacy = as.factor(predictionData$efficacy)
+predictionData$maxHLB = predict(br.ml, predictionData)
+
+```
+
+```{r}
+predictionData %>%
+  mutate(window = as.factor(window), years=maxT/365) %>%
+  ggplot(aes(x=maxT, y=maxHLB, color=efficacy, linetype=window)) +
+  geom_line() +
+  labs(x="Length of Infection", 
+       y="Predicted Mean Severity",
+       color="Efficacy",
+       linetype="Window") +
+  scale_y_continuous(breaks=seq(0,1,0.1)) +
+  scale_color_viridis(discrete=TRUE, option="turbo") +
+  theme_grey()
+ggsave("windowpairs-output/predictedSpread.jpg", dpi=300, width=7, height=5)
+```
+
+yield curves?
+```{r}
+predictionData$yield = exp(-1.85*predictionData$maxHLB)
+```
+
+```{r}
+predictionData %>%
+  filter(maxT <= 1825) %>%
+  mutate(window = as.factor(window), years=maxT/365) %>%
+  ggplot(aes(x=maxT, y=yield, color=efficacy, linetype=window)) +
+  geom_line() +
+  labs(x="Length of Infection", y="Expected Yield", color="Efficacy", linetype="Window") +
+  scale_y_continuous(breaks=seq(0,1,0.1)) +
+  scale_color_viridis(discrete=TRUE, option="turbo") +
+  theme_grey()
+ggsave("windowpairs-output/predictedYield.jpg", dpi=300, width=7, height=5)
+```

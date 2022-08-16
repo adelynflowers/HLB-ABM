@@ -1,0 +1,242 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+```{r}
+library(readr)
+library(tidyverse)
+library(plotly)
+```
+
+```{r}
+ac_m1g0 = read_csv("C:/dev/EconABM/Analysis/GridSnaps/for_presentation/ga_m1g0.csv")
+#ac_m6g12 = read_csv("~/dev/EconABM/Analysis/GridSnaps/ga_ac/2021-09-21-21.35.10.570944_m6_g12_bio.csv")
+nc_m1g0 =  read_csv("C:/dev/EconABM/Analysis/GridSnaps/for_presentation/ga_m1g0.csv")
+#nc_m6g12 = read_csv("~/dev/EconABM/Analysis/GridSnaps/2021-09-21-21.35.10.570944_m1_g0_bio.csv")
+#ac_m1g0$i = as.factor(ac_m1g0$i)
+#ac_m1g0$j = as.factor(ac_m1g0$j)
+#nc_m1g0$i = as.factor(nc_m1g0$i)
+#nc_m1g0$j = as.factor(nc_m1g0$j)
+```
+
+
+```{r}
+nc_100 = nc_m1g0 %>% filter(t==800 | t==100 | t==1200) %>% filter(hlbSeverity > 0) %>% select(i,j,hlbSeverity, t)
+
+icoord = seq(33,1)
+jcoord = seq(75,1)
+arr = array(1:3, dim = c(75,33))
+arr[] = nc_100$hlbSeverity
+grid_h = aperm(arr)
+arr[] = nc_100$t
+grid_t = aperm(arr)
+p = plot_ly(colors=c('black','red')) %>%
+  add_surface(
+    x=icoord,
+    y=jcoord,
+    z=grid_t,
+    surfacecolor=grid_h,
+    cauto=F,
+    cmax=1,
+    cmin=0
+  )
+#p
+
+
+ncx = list(nticks=5, range=c(32,0))
+ncy = list(nticks=5, range=c(74,0))
+ncz = list(nticks=12, range=c(0,1200))
+fig = 
+  plot_ly(nc_100, 
+          x=~i, 
+          y =~j, 
+          z=~t, 
+          colorscale = colorRampPalette(c("blue", "green"))(4),
+          marker=list(
+            color=~hlbSeverity,
+            opacity=0.75
+          )
+          ) %>%
+  layout(scene = list(xaxis=ncx, 
+                      yaxis=ncy, 
+                      zaxis=ncz, 
+                      aspectmode='manual', 
+                      aspectratio = list(x=1,y=1.4,z=1))) 
+fig
+```
+
+
+
+
+
+
+
+
+#DAY 600
+```{r}
+ac_m1g0_d0 = ac_m1g0 %>% filter(t==200)
+ac_m1g0_d0 %>%
+  ggplot(aes(x=j,y=i,fill=hlbSeverity)) +
+  geom_tile(color="black") +
+  scale_fill_gradient(low="blue", high="red", limits=c(0, 1), labels=scales::percent) +
+  theme_bw() +
+  coord_equal() +
+  theme(axis.text.y = element_blank(), axis.text.x=element_blank()) +
+  scale_y_discrete(limits = rev(levels(ac_m1g0_d0$i))) +
+  labs(title = 'Simulation of HLB spread with Complete Cooperation', 
+       subtitle = 'Day: 200', x = 'Column', y = 'Row', fill="HLB Severity")
+ggsave("~/Documents/poster/ac_200.tiff", width=7, height=5, dpi=300)
+
+nc_m1g0_d0 = nc_m1g0 %>% filter(t==200)
+nc_m1g0_d0 %>%
+  ggplot(aes(x=j,y=i,fill=hlbSeverity)) +
+  geom_tile(color="black") +
+  scale_fill_gradient(low="blue", high="red", limits=c(0, 1), labels=scales::percent) +
+  theme_bw() +
+  coord_equal() +
+  theme(axis.text.y = element_blank(), axis.text.x=element_blank()) +
+  scale_y_discrete(limits = rev(levels(ac_m1g0_d0$i))) +
+  labs(title = 'Simulation of HLB spread with No Mitigation', 
+       subtitle = 'Day: 200', x = 'Column', y = 'Row', fill="HLB Severity")
+ggsave("~/Documents/poster/nc_200.tiff", width=7, height=5, dpi=300)
+
+```
+
+
+#Day 1200
+```{r}
+ac_m1g0_d0 = ac_m1g0 %>% filter(t==600)
+ac_m1g0_d0 %>%
+  ggplot(aes(x=j,y=i,fill=hlbSeverity)) +
+  geom_tile(color="black") +
+  scale_fill_gradient(low="blue", high="red", limits=c(0, 1), labels=scales::percent) +
+  theme_bw() +
+  coord_equal() +
+  theme(axis.text.y = element_blank(), axis.text.x=element_blank()) +
+  scale_y_discrete(limits = rev(levels(ac_m1g0_d0$i))) +
+  labs(title = 'Simulation of HLB spread with Complete Cooperation', 
+       subtitle = 'Day: 600', x = 'Column', y = 'Row', fill="HLB Severity")
+ggsave("~/Documents/poster/ac_600.tiff", width=7, height=5, dpi=300)
+
+nc_m1g0_d0 = nc_m1g0 %>% filter(t==600)
+nc_m1g0_d0 %>%
+  ggplot(aes(x=j,y=i,fill=hlbSeverity)) +
+  geom_tile(color="black") +
+  scale_fill_gradient(low="blue", high="red", limits=c(0, 1), labels=scales::percent) +
+  theme_bw() +
+  coord_equal() +
+  theme(axis.text.y = element_blank(), axis.text.x=element_blank()) +
+  scale_y_discrete(limits = rev(levels(ac_m1g0_d0$i))) +
+  labs(title = 'Simulation of HLB spread with No Mitigation', 
+       subtitle = 'Day: 600', x = 'Column', y = 'Row', fill="HLB Severity")
+ggsave("~/Documents/poster/nc_600.tiff", width=7, height=5, dpi=300)
+
+```
+
+
+
+#Day 800
+```{r}
+ac_m1g0_d0 = ac_m1g0 %>% filter(t==800)
+ac_m1g0_d0 %>%
+  ggplot(aes(x=j,y=i,fill=hlbSeverity)) +
+  geom_tile(color="black") +
+  scale_fill_gradient(low="blue", high="red", limits=c(0, 1), labels=scales::percent) +
+  theme_bw() +
+  coord_equal() +
+  theme(axis.text.y = element_blank(), axis.text.x=element_blank()) +
+  scale_y_discrete(limits = rev(levels(ac_m1g0_d0$i))) +
+  labs(title = 'Simulation of HLB spread with Complete Cooperation', 
+       subtitle = 'Day: 800', x = 'Column', y = 'Row', fill="HLB Severity")
+ggsave("~/Documents/poster/ac_800.tiff", width=7, height=5, dpi=300)
+
+nc_m1g0_d0 = nc_m1g0 %>% filter(t==800)
+nc_m1g0_d0 %>%
+  ggplot(aes(x=j,y=i,fill=hlbSeverity)) +
+  geom_tile(color="black") +
+  scale_fill_gradient(low="blue", high="red", limits=c(0, 1), labels=scales::percent) +
+  theme_bw() +
+  coord_equal() +
+  theme(axis.text.y = element_blank(), axis.text.x=element_blank()) +
+  scale_y_discrete(limits = rev(levels(ac_m1g0_d0$i))) +
+  labs(title = 'Simulation of HLB spread with No Mitigation', 
+       subtitle = 'Day: 800', x = 'Column', y = 'Row', fill="HLB Severity")
+ggsave("~/Documents/poster/nc_800.tiff", width=7, height=5, dpi=300)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+
+grid = bio_copy %>% 
+  ggplot(aes(x = j, y = i, fill=hlbSeverity)) + 
+  geom_tile(color="black") +
+  scale_fill_gradient(low="blue", high="red", limits=c(0, 1)) +
+  theme_bw() +
+  coord_equal() +
+  scale_y_discrete(limits = rev(levels(bio_copy$i))) +
+  labs(title = 'Simulation of HLB spread in single grove (Invasion on Day 80)', subtitle = 'Day: {frame_time}', x = 'Column', y = 'Row') +
+  transition_time(t) +
+  ease_aes()
+grid_gif = animate(grid, height = 600, width = 600)
+grid_gif
+
+```

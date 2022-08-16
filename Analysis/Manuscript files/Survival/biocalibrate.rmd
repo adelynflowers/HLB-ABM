@@ -1,0 +1,313 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+Load libraries
+
+```{r}
+library(readr)
+library(tidyverse)
+library(survival)
+library(ggfortify)
+library(ranger)
+library(survminer)
+library(stargazer)
+```
+
+Now, bio calibration data
+
+```{r}
+basePath = "C:/dev/EconABM/Analysis/survival_analysis/bio_calibrate_files"
+#65
+df = data.frame(X1=numeric(),t=numeric(), groveID=character(), E=logical(), strategy=character(), alpha=numeric())
+for (efficacy in c(65,75,85)) {
+  path = paste(basePath,"/",efficacy,sep="")
+  setwd(path)
+  e_df = list.files(path, pattern="*.csv") %>% map_df(~read_csv(.))
+  e_df$efficacy = (efficacy / 100)
+  df = rbind(df,e_df)
+}
+
+df = df %>% select(t, groveID, E, efficacy, strategy, alpha)
+#Grab a few more from window pairs to round it out
+ga_ac_65 = read.csv("C:/dev/EconABM/Analysis/survival_analysis/windowPairs/w21_e65.csv")
+ga_ac_75 = read.csv("C:/dev/EconABM/Analysis/survival_analysis/windowPairs/w21_e75.csv")
+ga_ac_85 = read.csv("C:/dev/EconABM/Analysis/survival_analysis/windowPairs/w21_e85.csv")
+combined = rbind(ga_ac_65,ga_ac_75,ga_ac_85) %>% select(t, groveID, E, efficacy)
+combined$strategy = "Group Action"
+combined$alpha = 1
+combined$E = as.logical(combined$E)
+df = rbind(df, combined) 
+
+df$groveID = as.factor(df$groveID)
+df$alpha = as.factor(df$alpha)
+df$strategy = as.factor(df$strategy)
+df$strategy = factor(df$strategy, levels=c("No Action", "Individual Action", "Group Action"))
+```
+
+
+```{r}
+stargazer(as.data.frame(df %>% select(t, E, efficacy, strategy, alpha)),
+          type="latex", 
+          summary.stat = c("n","sd","mean", "min", "max"),
+          title="Summary of Variable Coordination Data",
+          label="Tab:varcoord-summary")
+```
+
+Plot stratified KM curves
+
+```{r}
+alphas = c(0,1)
+efficacies = c(0.65,0.75,0.85)
+strategies = c("Individual Action", "No Action", "Group Action")
+
+ggDF = data.frame(Time=integer(), Surv=double(), CumHaz=double(), Hazard=double(), Efficacy=double(), Window=integer())
+for (a in alphas) {
+  for (s in strategies) {
+    for (e in efficacies) {
+      km = df %>% filter (efficacy == e, strategy == s, alpha == a)
+      km = survfit(Surv(t,E) ~ 1, data=km)
+      hazardtable = broom::tidy(km) %>% filter(n.event > 0) %>% mutate(hazard = n.event / (n.risk * (lead(time) - time)))
+      km_df = data.frame(time=km$time, 
+                         Surv=km$surv, 
+                         CumHaz=km$cumhaz, 
+                         Efficacy=rep(e, length(km$time)), 
+                         Strategy=rep(s, length(km$time)),
+                         Alpha=rep(a, length(km$time)))
+      km_df = left_join(km_df, hazardtable, by=c("time"))
+      km_df = km_df %>% select(time, Surv, CumHaz, hazard, Efficacy, Strategy, Alpha)
+      names(km_df) =  c("Time", "Surv", "CumHaz", "Hazard", "Efficacy", "Strategy", "Alpha")
+      ggDF = rbind(ggDF, km_df)
+      
+    }
+    
+   
+  }
+}
+
+ggDF$Efficacy = as.factor(ggDF$Efficacy)
+ggDF$Alpha = as.factor(ggDF$Alpha)
+ggDF$Strategy = factor(ggDF$Strategy, levels= c("No Action", "Individual Action", "Group Action"))
+```
+
+```{r}
+gg_65 = ggDF %>%
+  filter(Efficacy==0.65) %>%
+  ggplot(aes(x=Time, y=Surv, color=Strategy, linetype=Alpha)) +
+  geom_line() +
+  xlab("Days since start of simulation") +
+  ylab("Survival Probability") +
+  labs(color="Strategy", linetype="Alpha") +
+  scale_color_viridis(discrete=TRUE, option="turbo")
+
+gg_75 = ggDF %>%
+  filter(Efficacy==0.75) %>%
+  ggplot(aes(x=Time, y=Surv, color=Strategy, linetype=Alpha)) +
+  geom_line() +
+  xlab("Days since start of simulation") +
+  ylab("Survival Probability") +
+  labs(color="Strategy", linetype="Alpha") +
+  scale_color_viridis(discrete=TRUE, option="turbo")
+
+
+gg_85 = ggDF %>%
+  filter(Efficacy==0.85) %>%
+  ggplot(aes(x=Time, y=Surv, color=Strategy, linetype=Alpha)) +
+  geom_line() +
+  xlab("Days since start of simulation") +
+  ylab("Survival Probability") +
+  labs(color="Strategy", linetype="Alpha") +
+  scale_color_viridis(discrete=TRUE, option="turbo")
+
+
+gg_65
+ggsave("biocalibrate-output/survivalMean65.png", width = 7, height=5, dpi=300)
+gg_75
+ggsave("biocalibrate-output/survivalMean75.png", width = 7, height=5, dpi=300)
+gg_85
+ggsave("biocalibrate-output/survivalMean85.png", width = 7, height=5, dpi=300)
+```
+
+Time to test models
+
+
+First testing a baseline cox model with all the variables
+```{r}
+df$efficacy = as.factor(df$efficacy)
+combos = data.frame(model=character(), AIC_I=double())
+coxfit = coxph(Surv(t,E) ~ strategy + efficacy*alpha  + groveID, data=df)
+summary(coxfit)
+extractAIC(coxfit)
+combos = combos %>% add_row(model="cox", AIC_I=extractAIC(coxfit)[2])
+```
+
+And now each of the standard distributions included with the package. First with interaction term
+```{r}
+
+for (dis in c("weibull", "exponential", "gaussian","logistic","lognormal","loglogistic")) {
+  print(dis)
+  fit = survreg(Surv(t,E) ~ strategy + efficacy*alpha  + groveID, data=df, dist=dis)
+  print(summary(fit))
+  print(extractAIC(fit))
+  combos = combos %>% add_row(model=dis, AIC_I = extractAIC(fit)[2])
+}
+```
+```{r}
+w_fit = survreg(Surv(t,E) ~ strategy + efficacy*alpha + groveID, data=df, dist="weibull")
+e_fit = survreg(Surv(t,E) ~ strategy + efficacy*alpha + groveID, data=df, dist="exponential")
+g_fit = survreg(Surv(t,E) ~ strategy + efficacy*alpha + groveID, data=df, dist="gaussian")
+l_fit = survreg(Surv(t,E) ~ strategy + efficacy*alpha + groveID, data=df, dist="logistic")
+ln_fit = survreg(Surv(t,E) ~strategy + efficacy*alpha + groveID, data=df, dist="lognormal")
+ll_fit = survreg(Surv(t,E) ~ strategy + efficacy*alpha + groveID, data=df, dist="loglogistic")
+stargazer(w_fit,e_fit,g_fit,l_fit,ln_fit,ll_fit, 
+          align=TRUE, omit=c("groveID*"), no.space=TRUE,
+          float.env = "sidewaystable",
+          title="Interaction bio-calibrate",
+          column.labels = c("Weibull", "Exponential", "Gaussian", "Logistic", "Lognormal", "Loglogistic"),
+          object.names=FALSE,
+          model.names=FALSE,
+          model.numbers=FALSE)
+```
+Compare AIC across models
+```{r}
+print(combos)
+
+```
+
+The data seems to suggest that at higher efficacies and complete cooperation, spraying strategies have more influence. Let's try again with a 3 way interaction term we add by hand, as well as an interaction between alpha and efficacy
+```{r}
+df$threeterm = if_else(df$alpha == 1 & df$efficacy==0.85 & df$strategy!="No Action", TRUE, FALSE)
+combos = data.frame(model=character(), AIC_I=double())
+coxfit = coxph(Surv(t,E) ~ strategy + efficacy*alpha  + groveID + threeterm, data=df)
+summary(coxfit)
+extractAIC(coxfit)
+combos = combos %>% add_row(model="cox", AIC_I=extractAIC(coxfit)[2])
+```
+
+And now each of the standard distributions included with the package. First with interaction term
+```{r}
+
+for (dis in c("weibull", "exponential", "gaussian","logistic","lognormal","loglogistic")) {
+  print(dis)
+  fit = survreg(Surv(t,E) ~ strategy + efficacy*alpha  + groveID + threeterm, data=df, dist=dis)
+  print(summary(fit))
+  print(extractAIC(fit))
+  combos = combos %>% add_row(model=dis, AIC_I = extractAIC(fit)[2])
+}
+```
+
+```{r}
+w_fit = survreg(Surv(t,E) ~ strategy + efficacy*alpha + groveID + threeterm, data=df, dist="weibull")
+e_fit = survreg(Surv(t,E) ~ strategy + efficacy*alpha + groveID + threeterm, data=df, dist="exponential")
+g_fit = survreg(Surv(t,E) ~ strategy + efficacy*alpha + groveID + threeterm, data=df, dist="gaussian")
+l_fit = survreg(Surv(t,E) ~ strategy + efficacy*alpha + groveID + threeterm, data=df, dist="logistic")
+ln_fit = survreg(Surv(t,E) ~strategy + efficacy*alpha + groveID + threeterm, data=df, dist="lognormal")
+ll_fit = survreg(Surv(t,E) ~ strategy + efficacy*alpha + groveID + threeterm, data=df, dist="loglogistic")
+stargazer(w_fit,e_fit,g_fit,l_fit,ln_fit,ll_fit, 
+          align=TRUE, omit=c("groveID*"), no.space=TRUE,
+          float.env = "sidewaystable",
+          title="Threeterm bio-calibrate",
+          column.labels = c("Weibull", "Exponential", "Gaussian", "Logistic", "Lognormal", "Loglogistic"),
+          object.names=FALSE,
+          model.names=FALSE,
+          model.numbers=FALSE)
+```
+
+Compare AIC across models
+```{r}
+print(combos)
+```
+
+
+Three term weibull seemed to be the best, let's look closer
+```{r}
+wfit = survreg(Surv(t,E) ~ strategy + efficacy*alpha  + groveID, data=df, dist="weibull")
+wfit_t = survreg(Surv(t,E) ~ strategy + efficacy*alpha  + groveID + threeterm, data=df, dist="weibull")
+stargazer(wfit,wfit_t, 
+          align=TRUE, omit=c("groveID*"), no.space=TRUE,
+          title="weibull comparison",
+          column.labels = c("Weibull(Interaction)", "Weibull(\textttt{threeterm})"),
+          object.names=FALSE,
+          model.names=FALSE,
+          model.numbers=FALSE)
+```
+Check out exponentiated coefficients
+```{r}
+cbind(coef(wfit), "exp(coef)"=exp(coef(wfit)), confint(wfit))
+```
+Checking prediction
+```{r}
+nd1 = data.frame(alpha=factor(0, levels=c(0,1)),
+                 efficacy=factor(0.75, levels=c(0.65,0.75,0.85)),
+                 strategy=factor("No Action", levels=c("No Action", "Individual Action", "Group Action")),
+                 groveID=factor("g01", levels=c("g00","g01","g02","g10","g11","g12","g20","g21","g22")),
+                 threeterm=FALSE)
+nd2 = data.frame(alpha=factor(1, levels=c(0,1)),
+                 efficacy=factor(0.75, levels=c(0.65,0.75,0.85)),
+                 strategy=factor("No Action", levels=c("No Action", "Individual Action", "Group Action")),
+                 groveID=factor("g01", levels=c("g00","g01","g02","g10","g11","g12","g20","g21","g22")),
+                 threeterm=FALSE)
+
+predict(wfit, newdata=nd2) / predict(wfit, newdata=nd1)
+```
+Confirmed, coefficient interpretation can be done by exponentiating the change in the linear model, which is the % increase in survival time
+
+```{r}
+predictionData = data.frame(t=numeric(), strategy=character(), alpha=numeric(), groveID=character(), efficacy=numeric(), threeterm=logical())
+for (e in c(0.65,0.75,0.85)) {
+  for (s in c("No Action", "Individual Action", "Group Action")) {
+    for (gID in c("g00", "g01", "g02", "g10", "g11", "g12", "g20", "g21", "g22")) {
+      for (a in c(0,1)) {
+        loopThree = (e == 0.85 && s != "No Action" && a==1)
+        loopDF = data.frame(t=seq(0,1825), strategy=s, alpha=a, groveID=gID, efficacy=e, threeterm=loopThree)
+        predictionData=rbind(predictionData,loopDF)
+      }
+    }
+  }
+}
+predictionData$strategy = factor(predictionData$strategy, levels=c("No Action", "Individual Action", "Group Action"))
+predictionData$alpha = as.factor(predictionData$alpha)
+predictionData$efficacy = as.factor(predictionData$efficacy)
+predictionData$survival_lp = predict(wfit, newdata=predictionData,type="lp")
+predictionData$survival = exp(-1 * ((predictionData$t / exp(predictionData$survival_lp))^(1/wfit$scale)))
+```
+
+```{r}
+ggPD = predictionData %>% group_by(t, strategy, alpha, efficacy) %>% summarize(survival = mean(survival))
+gg_65 = ggPD %>%
+  filter(efficacy==0.65) %>%
+  ggplot(aes(x=t, y=survival, color=strategy, linetype=alpha)) +
+  geom_line() +
+  xlab("Days since start of simulation") +
+  ylab("Survival Probability") +
+  labs(color="Strategy", linetype="Alpha") +
+  scale_color_viridis(discrete=TRUE, option="turbo")
+
+gg_75 = ggPD %>%
+  filter(efficacy==0.75) %>%
+  ggplot(aes(x=t, y=survival, color=strategy, linetype=alpha)) +
+  geom_line() +
+  xlab("Days since start of simulation") +
+  ylab("Survival Probability") +
+  labs(color="Strategy", linetype="Alpha") +
+  scale_color_viridis(discrete=TRUE, option="turbo")
+
+gg_85 = ggPD %>%
+  filter(efficacy==0.85) %>%
+  ggplot(aes(x=t, y=survival, color=strategy, linetype=alpha)) +
+  geom_line() +
+  xlab("Days since start of simulation") +
+  ylab("Survival Probability") +
+  labs(color="Strategy", linetype="Alpha") +
+  scale_color_viridis(discrete=TRUE, option="turbo")
+
+
+gg_65
+ggsave("biocalibrate-output/survivalPrediction65.png", width = 7, height=5, dpi=300)
+gg_75
+ggsave("biocalibrate-output/survivalPrediction75.png", width = 7, height=5, dpi=300)
+gg_85
+ggsave("biocalibrate-output/survivalPrediction85.png", width = 7, height=5, dpi=300)
+
+```
+

@@ -1,0 +1,16 @@
+{
+    "planningLength": 91,
+    "freshYield": 0.8623,
+    "juiceYield": 0.0,
+    "freshPrice": 1,
+    "juicePrice": 0.0,
+    "costs": 0,
+    "biologicalRun": false,
+    "projectionLength": 3600,
+    "outputFilename": "econ_output.csv",
+    "harvestDays":"100,200,300",
+    "strategyParameters":"0,0,0,0,0,0,0,0,5,0,1,20,10",
+    "strategyFlags":"0,0,0,1",
+    "agencyFlags":"0",
+    "experimentID": -1
+}
